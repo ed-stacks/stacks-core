@@ -1,0 +1,32 @@
+[package]
+name = "stacks-bench-wasm"
+description = "Run and persist comparative benchmarks of the interpreter vs. the WASM runtime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+indicatif = "0.18.2"
+rusqlite = { workspace = true }
+slog = { workspace = true }
+
+[dependencies.libstackerdb]
+path = "../../libstackerdb"
+default-features = false 
+
+[dependencies.stackslib]
+package = "stackslib"
+path = "../../stackslib"
+default-features = false 
+
+[dependencies.clarity]
+path = "../../clarity"
+default-features = false 
+
+[dependencies.stacks-common]
+path = "../../stacks-common"
+default-features = false 
+
+[features]
+clarity-wasm = ["stackslib/clarity-wasm", "clarity/clarity-wasm", "stacks-common/clarity-wasm"]
