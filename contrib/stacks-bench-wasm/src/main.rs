@@ -30,7 +30,7 @@ struct Args {
     bench_db: PathBuf,
     /// Height of the first block to replay (inclusive)
     start_height: u64,
-    /// Height of the last block to replay (exclusive)
+    /// Height of the last block to replay (inclusive)
     end_height: u64,
     /// Path to a custom network configuration file
     #[arg(long)]

@@ -13,19 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod db;
+
 use std::process;
 use std::time::Instant;
-
-use rusqlite::{Connection, OpenFlags};
 
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::sqlite::NO_PARAMS;
 use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
-use stackslib::chainstate::stacks::Error as ChainstateError;
 use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
+use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
 use stackslib::config::Config;
 
 pub fn command_bench(
@@ -35,7 +35,8 @@ pub fn command_bench(
     end_block: u64,
     conf: Config,
 ) -> Result<(), ChainstateError> {
-    let start = Instant::now();
+    // initialize the bench database
+    db::init_bench(&bench_db)?;
 
     let chain_state_path = format!("{chain_db}/chainstate/");
 
@@ -61,15 +62,10 @@ pub fn command_bench(
         index_block_hashes.push(row.get(0)?);
     }
 
-    let total = index_block_hashes.len();
-    println!("Will check {total} blocks");
-    for (i, index_block_hash) in index_block_hashes.iter().enumerate() {
-        if i % 100 == 0 {
-            println!("Checked {i}...");
-        }
-        replay_naka_staging_block(&chain_db, index_block_hash, &conf)?;
+    for block_hash in index_block_hashes {
+        let bench = replay_naka_staging_block(&chain_db, block_hash, &conf)?;
+        db::insert_bench(&bench_db, &bench)?;
     }
-    println!("Finished. run_time_seconds = {}", start.elapsed().as_secs());
 
     Ok(())
 }
@@ -77,10 +73,10 @@ pub fn command_bench(
 /// Fetch and process a NakamotoBlock from database and call `replay_block_nakamoto()` to validate
 fn replay_naka_staging_block(
     db_path: &str,
-    index_block_hash_hex: &str,
+    block_hash: String,
     conf: &Config,
-) -> Result<(), ChainstateError> {
-    let block_id = StacksBlockId::from_hex(index_block_hash_hex).unwrap();
+) -> Result<db::Bench, ChainstateError> {
+    let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
     let chain_state_path = format!("{db_path}/chainstate/");
     let sort_db_path = format!("{db_path}/burnchain/sortition");
 
@@ -109,9 +105,24 @@ fn replay_naka_staging_block(
         .get_nakamoto_block(&block_id)?
         .unwrap();
 
-    replay_block_nakamoto(&mut sortdb, &mut chainstate, &block, block_size)?;
+    let start = Instant::now();
+    let error = replay_block_nakamoto(&mut sortdb, &mut chainstate, &block, block_size)
+        .err()
+        .map(|err| err.to_string());
+    let runtime = start.elapsed().as_nanos();
 
-    Ok(())
+    let calls = block.txs.iter().fold(0, |calls, tx| match &tx.payload {
+        TransactionPayload::ContractCall(_) => calls + 1,
+        _ => calls,
+    });
+
+    Ok(db::Bench {
+        block_hash,
+        wasm: cfg!(feature = "clarity-wasm"),
+        runtime: runtime.try_into().expect("nanosecond precision overflow"),
+        calls,
+        error,
+    })
 }
 
 fn replay_block_nakamoto(
