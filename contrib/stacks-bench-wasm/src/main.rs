@@ -13,22 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#[macro_use]
-extern crate stacks_common;
-
 use std::path::PathBuf;
 
 use clap::Parser;
-use clarity::consts::CHAIN_ID_MAINNET;
-use clarity::types::StacksEpochId;
-use clarity::types::chainstate::StacksPrivateKey;
-use stacks_bench_wasm::command_bench;
-use stackslib::chainstate::stacks::miner::BlockBuilderSettings;
-use stackslib::chainstate::stacks::{
-    CoinbasePayload, StacksBlock, StacksBlockBuilder, StacksMicroblock, StacksTransaction,
-    StacksTransactionSigner, TransactionAnchorMode, TransactionAuth, TransactionPayload,
-    TransactionVersion,
-};
+
 use stackslib::config::{Config, ConfigFile};
 
 /// Execute slices of the blockchain by block height, inserting some captured
@@ -49,14 +37,16 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let config_file = match args.config {
         None => ConfigFile::mainnet(),
-        Some(config_path) => ConfigFile::from_path(&*config_path.to_string_lossy()).unwrap(),
+        Some(config_path) => ConfigFile::from_path(&*config_path.to_string_lossy())
+            .expect("Failed loading network configfile"),
     };
-    let config = Config::from_config_file(config_file, false).unwrap();
+    let config = Config::from_config_file(config_file, false)
+        .expect("Failed loading network config from file");
 
     stacks_bench_wasm::command_bench(
         args.chain_db.to_string_lossy().to_string(),
@@ -64,5 +54,7 @@ fn main() {
         args.start_height,
         args.end_height,
         config,
-    );
+    )?;
+
+    Ok(())
 }

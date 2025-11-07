@@ -17,23 +17,15 @@ use std::process;
 use std::time::Instant;
 
 use rusqlite::{Connection, OpenFlags};
+
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::sqlite::NO_PARAMS;
-use stacks_common::util::hash::Hash160;
-use stacks_common::util::vrf::VRFProof;
-use stacks_common::{debug, info, warn};
-use stackslib::burnchains::Burnchain;
-use stackslib::chainstate::burn::ConsensusHash;
-use stackslib::chainstate::burn::db::sortdb::{
-    SortitionDB, SortitionHandleContext, get_ancestor_sort_id,
-};
+use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
-use stackslib::chainstate::nakamoto::miner::{
-    BlockMetadata, NakamotoBlockBuilder, NakamotoTenureInfo,
-};
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
+use stackslib::chainstate::stacks::Error as ChainstateError;
+use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
-use stackslib::chainstate::stacks::db::{StacksChainState, StacksHeaderInfo};
 use stackslib::config::Config;
 
 pub fn command_bench(
@@ -42,7 +34,7 @@ pub fn command_bench(
     start_block: u64,
     end_block: u64,
     conf: Config,
-) {
+) -> Result<(), ChainstateError> {
     let start = Instant::now();
 
     let chain_state_path = format!("{chain_db}/chainstate/");
@@ -52,8 +44,7 @@ pub fn command_bench(
         conf.burnchain.chain_id,
         &chain_state_path,
         None,
-    )
-    .unwrap();
+    )?;
 
     let conn = chainstate.nakamoto_blocks_db();
 
@@ -62,12 +53,12 @@ pub fn command_bench(
         end_block.saturating_sub(start_block)
     );
 
-    let mut stmt = conn.prepare(&query).unwrap();
-    let mut hashes_set = stmt.query(NO_PARAMS).unwrap();
+    let mut stmt = conn.prepare(&query)?;
+    let mut hashes_set = stmt.query(NO_PARAMS)?;
 
     let mut index_block_hashes: Vec<String> = vec![];
     while let Ok(Some(row)) = hashes_set.next() {
-        index_block_hashes.push(row.get(0).unwrap());
+        index_block_hashes.push(row.get(0)?);
     }
 
     let total = index_block_hashes.len();
@@ -76,13 +67,19 @@ pub fn command_bench(
         if i % 100 == 0 {
             println!("Checked {i}...");
         }
-        replay_naka_staging_block(&chain_db, index_block_hash, conf);
+        replay_naka_staging_block(&chain_db, index_block_hash, &conf)?;
     }
     println!("Finished. run_time_seconds = {}", start.elapsed().as_secs());
+
+    Ok(())
 }
 
 /// Fetch and process a NakamotoBlock from database and call `replay_block_nakamoto()` to validate
-fn replay_naka_staging_block(db_path: &str, index_block_hash_hex: &str, conf: &Config) {
+fn replay_naka_staging_block(
+    db_path: &str,
+    index_block_hash_hex: &str,
+    conf: &Config,
+) -> Result<(), ChainstateError> {
     let block_id = StacksBlockId::from_hex(index_block_hash_hex).unwrap();
     let chain_state_path = format!("{db_path}/chainstate/");
     let sort_db_path = format!("{db_path}/burnchain/sortition");
@@ -92,8 +89,7 @@ fn replay_naka_staging_block(db_path: &str, index_block_hash_hex: &str, conf: &C
         conf.burnchain.chain_id,
         &chain_state_path,
         None,
-    )
-    .unwrap();
+    )?;
 
     let burnchain = conf.get_burnchain();
     let epochs = conf.burnchain.get_epoch_list();
@@ -106,16 +102,16 @@ fn replay_naka_staging_block(db_path: &str, index_block_hash_hex: &str, conf: &C
         burnchain.pox_constants.clone(),
         None,
         true,
-    )
-    .unwrap();
+    )?;
 
     let (block, block_size) = chainstate
         .nakamoto_blocks_db()
-        .get_nakamoto_block(&block_id)
-        .unwrap()
+        .get_nakamoto_block(&block_id)?
         .unwrap();
 
-    replay_block_nakamoto(&mut sortdb, &mut chainstate, &block, block_size).unwrap();
+    replay_block_nakamoto(&mut sortdb, &mut chainstate, &block, block_size)?;
+
+    Ok(())
 }
 
 fn replay_block_nakamoto(
@@ -135,18 +131,11 @@ fn replay_block_nakamoto(
                 )
             });
 
-    info!("Process staging Nakamoto block";
-           "consensus_hash" => %block.header.consensus_hash,
-           "stacks_block_hash" => %block.header.block_hash(),
-           "stacks_block_id" => %block.header.block_id(),
-           "burn_block_hash" => %next_ready_block_snapshot.burn_header_hash
-    );
-
     let Some(mut expected_total_tenure_cost) = NakamotoChainState::get_total_tenure_cost_at(
         stacks_chain_state.db(),
         &block.header.block_id(),
-    )
-    .unwrap() else {
+    )?
+    else {
         println!("Failed to find cost for block {}", block.header.block_id());
         return Ok(());
     };
@@ -157,8 +146,8 @@ fn replay_block_nakamoto(
         let Some(expected_parent_total_tenure_cost) = NakamotoChainState::get_total_tenure_cost_at(
             stacks_chain_state.db(),
             &block.header.parent_block_id,
-        )
-        .unwrap() else {
+        )?
+        else {
             println!(
                 "Failed to find cost for parent of block {}",
                 block.header.block_id()
@@ -189,14 +178,14 @@ fn replay_block_nakamoto(
             true,
         )
         .map_err(|e| {
-            warn!(
-                "Cannot process Nakamoto block: could not load reward set that elected the block";
-                "err" => ?e,
-                "consensus_hash" => %block.header.consensus_hash,
-                "stacks_block_hash" => %block.header.block_hash(),
-                "stacks_block_id" => %block.header.block_id(),
-                "parent_block_id" => %block.header.parent_block_id,
+            eprintln!(
+                "Cannot process Nakamoto block: could not load reward set that elected the block"
             );
+            eprintln!("error: {:?}", e);
+            eprintln!("consensus_hash: {}", block.header.consensus_hash);
+            eprintln!("stacks_block_hash: {}", block.header.block_hash());
+            eprintln!("stacks_block_id: {}", block.header.block_id());
+            eprintln!("parent_block_id: {}", block.header.parent_block_id);
             ChainstateError::NoSuchBlockError
         })?;
     let (mut chainstate_tx, clarity_instance) = stacks_chain_state.chainstate_tx_begin()?;
@@ -206,12 +195,11 @@ fn replay_block_nakamoto(
         NakamotoChainState::get_block_header(&chainstate_tx.tx, &block.header.parent_block_id)?
     else {
         // no parent; cannot process yet
-        info!("Cannot process Nakamoto block: missing parent header";
-               "consensus_hash" => %block.header.consensus_hash,
-               "stacks_block_hash" => %block.header.block_hash(),
-               "stacks_block_id" => %block.header.block_id(),
-               "parent_block_id" => %block.header.parent_block_id
-        );
+        eprintln!("Cannot process Nakamoto block: missing parent header");
+        eprintln!("consensus_hash: {}", block.header.consensus_hash);
+        eprintln!("stacks_block_hash: {}", block.header.block_hash());
+        eprintln!("stacks_block_id: {}", block.header.block_id());
+        eprintln!("parent_block_id: {}", block.header.parent_block_id);
         return Ok(());
     };
 
@@ -224,13 +212,12 @@ fn replay_block_nakamoto(
         drop(chainstate_tx);
 
         let msg = "Discontinuous Nakamoto Stacks block";
-        warn!("{}", &msg;
-              "child parent_block_id" => %block.header.parent_block_id,
-              "expected parent_block_id" => %parent_block_id,
-              "consensus_hash" => %block.header.consensus_hash,
-              "stacks_block_hash" => %block.header.block_hash(),
-              "stacks_block_id" => %block.header.block_id()
-        );
+        eprintln!("{msg}");
+        eprintln!("child parent_block_id: {}", block.header.parent_block_id);
+        eprintln!("expected parent_block_id: {}", parent_block_id);
+        eprintln!("consensus_hash: {}", block.header.consensus_hash);
+        eprintln!("stacks_block_hash: {}", block.header.block_hash());
+        eprintln!("stacks_block_id: {}", block.header.block_id());
         return Err(ChainstateError::InvalidStacksBlock(msg.into()));
     }
 
@@ -247,13 +234,13 @@ fn replay_block_nakamoto(
                 parent_burn_view,
             )?
             .ok_or_else(|| {
-                warn!(
-                    "Cannot process Nakamoto block: could not find parent block's burnchain view";
-                    "consensus_hash" => %block.header.consensus_hash,
-                    "stacks_block_hash" => %block.header.block_hash(),
-                    "stacks_block_id" => %block.header.block_id(),
-                    "parent_block_id" => %block.header.parent_block_id
+                eprintln!(
+                    "Cannot process Nakamoto block: could not find parent block's burnchain view"
                 );
+                eprintln!("consensus_hash: {}", block.header.consensus_hash);
+                eprintln!("stacks_block_hash: {}", block.header.block_hash());
+                eprintln!("stacks_block_id: {}", block.header.block_id());
+                eprintln!("parent_block_id: {}", block.header.parent_block_id);
                 ChainstateError::InvalidStacksBlock(
                     "Failed to load burn view of parent block ID".into(),
                 )
@@ -265,25 +252,25 @@ fn replay_block_nakamoto(
                 &handle.context.chain_tip,
             )?
             .ok_or_else(|| {
-                warn!(
-                    "Cannot process Nakamoto block: could not find parent block's burnchain view";
-                    "consensus_hash" => %block.header.consensus_hash,
-                    "stacks_block_hash" => %block.header.block_hash(),
-                    "stacks_block_id" => %block.header.block_id(),
-                    "parent_block_id" => %block.header.parent_block_id
+                eprintln!(
+                    "Cannot process Nakamoto block: could not find parent block's burnchain view"
                 );
+                eprintln!("consensus_hash: {}", block.header.consensus_hash);
+                eprintln!("stacks_block_hash: {}", block.header.block_hash());
+                eprintln!("stacks_block_id: {}", block.header.block_id());
+                eprintln!("parent_block_id: {}", block.header.parent_block_id);
                 ChainstateError::InvalidStacksBlock(
                     "Failed to load burn view of parent block ID".into(),
                 )
             })?;
             if connected_sort_id != parent_burn_view_sn.sortition_id {
-                warn!(
-                    "Cannot process Nakamoto block: parent block's burnchain view does not connect to own burn view";
-                    "consensus_hash" => %block.header.consensus_hash,
-                    "stacks_block_hash" => %block.header.block_hash(),
-                    "stacks_block_id" => %block.header.block_id(),
-                    "parent_block_id" => %block.header.parent_block_id
+                eprintln!(
+                    "Cannot process Nakamoto block: parent block's burnchain view does not connect to own burn view"
                 );
+                eprintln!("consensus_hash: {}", block.header.consensus_hash);
+                eprintln!("stacks_block_hash: {}", block.header.block_hash());
+                eprintln!("stacks_block_id: {}", block.header.block_id());
+                eprintln!("parent_block_id: {}", block.header.parent_block_id);
                 return Err(ChainstateError::InvalidStacksBlock(
                     "Does not connect to burn view of parent block ID".into(),
                 ));
@@ -292,13 +279,13 @@ fn replay_block_nakamoto(
         &tenure_change.burn_view_consensus_hash
     } else {
         parent_header_info.burn_view.as_ref().ok_or_else(|| {
-                warn!(
-                    "Cannot process Nakamoto block: parent block does not have a burnchain view and current block has no tenure tx";
-                    "consensus_hash" => %block.header.consensus_hash,
-                    "stacks_block_hash" => %block.header.block_hash(),
-                    "stacks_block_id" => %block.header.block_id(),
-                    "parent_block_id" => %block.header.parent_block_id
+                eprintln!(
+                    "Cannot process Nakamoto block: parent block does not have a burnchain view and current block has no tenure tx"
                 );
+                eprintln!("consensus_hash: {}", block.header.consensus_hash);
+                eprintln!("stacks_block_hash: {}", block.header.block_hash());
+                eprintln!("stacks_block_id: {}", block.header.block_id());
+                eprintln!("parent_block_id: {}", block.header.parent_block_id);
                 ChainstateError::InvalidStacksBlock("Failed to load burn view of parent block ID".into())
             })?
     };
@@ -311,13 +298,13 @@ fn replay_block_nakamoto(
         // We error here anyways, but the check during block acceptance makes sure that the staging
         //  db doesn't get into a situation where it continuously tries to retry such a block (because
         //  such a block shouldn't land in the staging db).
-        warn!(
-            "Cannot process Nakamoto block: failed to find Sortition ID associated with burnchain view";
-            "consensus_hash" => %block.header.consensus_hash,
-            "stacks_block_hash" => %block.header.block_hash(),
-            "stacks_block_id" => %block.header.block_id(),
-            "burn_view_consensus_hash" => %burnchain_view,
+        eprintln!(
+            "Cannot process Nakamoto block: failed to find Sortition ID associated with burnchain view"
         );
+        eprintln!("consensus_hash: {}", block.header.consensus_hash);
+        eprintln!("stacks_block_hash: {}", block.header.block_hash());
+        eprintln!("stacks_block_id: {}", block.header.block_id());
+        eprintln!("burn_view_consensus_hash: {}", burnchain_view);
         return Ok(());
     };
 
@@ -392,13 +379,13 @@ fn replay_block_nakamoto(
         // force rollback
         drop(chainstate_tx);
 
-        warn!(
+        eprintln!(
             "Failed to append {}/{}: {:?}",
-            &block.header.consensus_hash,
-            &block.header.block_hash(),
-            &e;
-            "stacks_block_id" => %block.header.block_id()
+            block.header.consensus_hash,
+            block.header.block_hash(),
+            e,
         );
+        eprintln!("stacks_block_id: {}", block.header.block_id());
 
         // as a separate transaction, mark this block as processed and orphaned.
         // This is done separately so that the staging blocks DB, which receives writes
