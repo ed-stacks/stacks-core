@@ -18,7 +18,6 @@ pub mod ast;
 pub mod cost;
 pub mod lexer;
 
-use std::string::FromUtf8Error;
 use std::{error, fmt};
 
 pub use analysis::{CheckError, CheckErrors};
@@ -127,7 +126,7 @@ pub enum WasmError {
     WasmCompileFailed(wasmtime::Error),
     UnableToLoadModule(wasmtime::Error),
     UnableToLinkHostFunction(String, wasmtime::Error),
-    UnableToReadIdentifier(FromUtf8Error),
+    UnableToReadIdentifier(std::string::FromUtf8Error),
     UnableToRetrieveIdentifier(i32),
     InvalidClarityName(String),
     UnableToWriteStackPointer(wasmtime::Error),

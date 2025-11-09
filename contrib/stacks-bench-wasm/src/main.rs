@@ -37,7 +37,7 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let config_file = match args.config {
@@ -57,4 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     Ok(())
+}
+
+fn main() {
+    if let Err(err) = inner_main() {
+        eprintln!("{err}");
+    }
 }

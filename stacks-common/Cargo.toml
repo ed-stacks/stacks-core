@@ -84,7 +84,7 @@ sha2 = { version = "0.10" }
 toml = { workspace = true }
 
 [features]
-default = ["rusqlite", "vrf", "developer-mode", "ctrlc-handler", "rand", "clarity-wasm"]
+default = ["rusqlite", "vrf", "developer-mode", "ctrlc-handler", "rand"]
 developer-mode = []
 # Enables graceful shutdown handling for Ctrl+C (SIGINT) signals.
 # This pulls in the `nix` or `winapi` dependency.

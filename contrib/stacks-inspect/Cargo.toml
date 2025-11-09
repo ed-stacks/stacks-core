@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-stackslib = { package = "stackslib", path = "../../stackslib", default-features = false }
-clarity = { path = "../../clarity", default-features = false }
+stackslib = { package = "stackslib", path = "../../stackslib" }
+clarity = { path = "../../clarity" }
 libstackerdb = { path = "../../libstackerdb", default-features = false }
-stacks-common = { path = "../../stacks-common", default-features = false }
+stacks-common = { path = "../../stacks-common" }
 regex = { version = "1", default-features = false }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
@@ -18,6 +18,3 @@ tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
 mutants = "0.0.3"
-
-[features]
-clarity-wasm = ["stackslib/clarity-wasm", "clarity/clarity-wasm", "stacks-common/clarity-wasm"]

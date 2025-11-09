@@ -14,8 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod db;
+mod plot;
 
-use std::process;
+use std::path::Path;
 use std::time::Instant;
 
 use stacks_common::types::chainstate::StacksBlockId;
@@ -28,6 +29,14 @@ use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
 use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
 use stackslib::config::Config;
 
+use crate::db::BenchDatabase;
+
+pub fn command_graph(bench_db: String, path: impl AsRef<Path>) -> Result<(), ChainstateError> {
+    let mut bench_db = BenchDatabase::open(bench_db)?;
+    plot::write_plot(&mut bench_db, path)?;
+    Ok(())
+}
+
 pub fn command_bench(
     chain_db: String,
     bench_db: String,
@@ -35,8 +44,7 @@ pub fn command_bench(
     end_block: u64,
     conf: Config,
 ) -> Result<(), ChainstateError> {
-    // initialize the bench database
-    db::init_bench(&bench_db)?;
+    let mut bench_db = BenchDatabase::open(bench_db)?;
 
     let chain_state_path = format!("{chain_db}/chainstate/");
 
@@ -50,8 +58,10 @@ pub fn command_bench(
     let conn = chainstate.nakamoto_blocks_db();
 
     let query = format!(
-        "SELECT index_block_hash FROM nakamoto_staging_blocks WHERE orphaned = 0 ORDER BY height ASC LIMIT {start_block}, {}",
-        end_block.saturating_sub(start_block)
+        "SELECT index_block_hash \
+         FROM nakamoto_staging_blocks \
+         WHERE orphaned = 0 \
+           AND height BETWEEN {start_block} and {end_block}"
     );
 
     let mut stmt = conn.prepare(&query)?;
@@ -62,9 +72,14 @@ pub fn command_bench(
         index_block_hashes.push(row.get(0)?);
     }
 
+    let mut curr_block = 1;
+    let n_blocks = index_block_hashes.len();
+
     for block_hash in index_block_hashes {
+        println!("Processing {curr_block}/{n_blocks}");
         let bench = replay_naka_staging_block(&chain_db, block_hash, &conf)?;
-        db::insert_bench(&bench_db, &bench)?;
+        bench_db.insert_bench(&bench)?;
+        curr_block += 1;
     }
 
     Ok(())
@@ -382,7 +397,6 @@ fn replay_block_nakamoto(
             println!(
                 "Failed processing block! block = {block_id}. Unexpected cost. expected = {expected_cost}, evaluated = {evaluated_cost}"
             );
-            process::exit(1);
         }
     }
 

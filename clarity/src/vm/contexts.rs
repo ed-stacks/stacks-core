@@ -754,7 +754,6 @@ impl<'a> OwnedEnvironment<'a> {
         )
     }
 
-    #[cfg(any(test, feature = "testing"))]
     pub fn initialize_versioned_contract(
         &mut self,
         contract_identifier: QualifiedContractIdentifier,
@@ -789,7 +788,6 @@ impl<'a> OwnedEnvironment<'a> {
     /// * `sponsor` - Optional sponsor principal for transaction fees (if `None`, sender pays)
     /// * `analysis_db` - Mutable reference to a database for analysis data
     ///
-    #[cfg(any(test, feature = "testing"))]
     pub fn initialize_versioned_contract_with_db(
         &mut self,
         contract_identifier: QualifiedContractIdentifier,

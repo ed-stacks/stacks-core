@@ -27,7 +27,7 @@ mutants = "0.0.3"
 rstest = "0.17.0"
 
 [features]
-default = ["clarity-wasm"]
+default = []
 testing = []
 developer-mode = ["stacks_common/developer-mode"]
 slog_json = ["stacks_common/slog_json"]

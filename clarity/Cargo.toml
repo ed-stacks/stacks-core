@@ -57,6 +57,8 @@ rstest_reuse = { version = "0.5.0" }
 serde_stacker = "0.1"
 
 [features]
+default = ["rusqlite", "serde_stacker", "vrf"]
+
 developer-mode = ["stacks_common/developer-mode", "clarity-types/developer-mode"]
 slog_json = ["stacks_common/slog_json"]
 rusqlite = ["stacks_common/rusqlite", "clarity-types/rusqlite", "dep:rusqlite"]
@@ -67,7 +69,6 @@ disable-costs = []
 wasm-web = ["stacks_common/wasm-web", "clarity-types/wasm-web"]
 
 # clarity-wasm
-default = ["rusqlite", "clarity-wasm", "serde_stacker", "vrf"]
-clarity-wasm = ["wasmtime"]
+clarity-wasm = ["wasmtime", "clarity-types/clarity-wasm"]
 vrf = ["stacks_common/vrf"]
 wasm = ["stacks_common/wasm", "developer-mode", "getrandom"]

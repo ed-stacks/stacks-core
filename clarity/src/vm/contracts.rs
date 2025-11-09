@@ -37,7 +37,7 @@ impl Contract {
     pub fn initialize_from_ast(
         contract_identifier: QualifiedContractIdentifier,
         contract: &mut ContractAST,
-        contract_analysis: &ContractAnalysis,
+        _contract_analysis: &ContractAnalysis,
         sponsor: Option<PrincipalData>,
         global_context: &mut GlobalContext,
         version: ClarityVersion,
@@ -54,7 +54,7 @@ impl Contract {
                     global_context,
                     &mut contract_context,
                     sponsor,
-                    contract_analysis,
+                    _contract_analysis,
                 )
             })?;
         } else {
