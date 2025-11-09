@@ -31,7 +31,10 @@ use stackslib::config::Config;
 
 use crate::db::BenchDatabase;
 
-pub fn command_graph(bench_db: String, path: impl AsRef<Path>) -> Result<(), ChainstateError> {
+pub fn command_graph(
+    bench_db: String,
+    path: impl AsRef<Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut bench_db = BenchDatabase::open(bench_db)?;
     plot::write_plot(&mut bench_db, path)?;
     Ok(())
