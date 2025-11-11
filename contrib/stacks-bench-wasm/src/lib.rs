@@ -26,10 +26,66 @@ use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
 use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
+use stackslib::chainstate::stacks::index::marf::{MARF, MarfConnection};
 use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
+use stackslib::clarity::vm::database::{ClarityDatabase, RollbackWrapper};
+use stackslib::clarity_vm::database::marf::PersistentWritableMarfStore;
 use stackslib::config::Config;
 
 use crate::db::BenchDatabase;
+
+pub fn command_compile(
+    chain_db: String,
+    start_block: u64,
+    end_block: u64,
+    conf: Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let chain_state_path = format!("{chain_db}/chainstate/");
+
+    let (chainstate, _) = StacksChainState::open(
+        conf.is_mainnet(),
+        conf.burnchain.chain_id,
+        &chain_state_path,
+        None,
+    )?;
+
+    let conn = chainstate.nakamoto_blocks_db();
+
+    let query = format!(
+        "SELECT index_block_hash \
+         FROM nakamoto_staging_blocks \
+         WHERE orphaned = 0 \
+           AND height BETWEEN {start_block} and {end_block}"
+    );
+
+    let mut stmt = conn.prepare(&query)?;
+    let mut hashes_set = stmt.query(NO_PARAMS)?;
+
+    let mut block_hashes: Vec<String> = vec![];
+    while let Ok(Some(row)) = hashes_set.next() {
+        block_hashes.push(row.get(0)?);
+    }
+
+    MARF::from_path(path, open_opts)
+
+    println!("Processing contracts of {} blocks", block_hashes.len());
+
+    for block_hash in block_hashes {
+        let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
+        let (block, _) = conn.get_nakamoto_block(&block_id)?.unwrap();
+
+        for tx in block.txs.iter() {
+            match &tx.payload {
+                TransactionPayload::ContractCall(contract_call) => {
+                    let contract_id = contract_call.contract_identifier();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
+}
 
 pub fn command_graph(
     bench_db: String,
