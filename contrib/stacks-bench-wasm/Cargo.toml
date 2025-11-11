@@ -8,7 +8,11 @@ publish = false
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
 rusqlite = { workspace = true, features = ["functions"] }
-plotters = { version = "0.3.7" }
+
+[dependencies.clar2wasm]
+git = "https://github.com/stx-labs/clarity-wasm.git"
+branch = "sync-wasm-develop"
+optional = true
 
 [dependencies.libstackerdb]
 path = "../../libstackerdb"
@@ -24,4 +28,4 @@ path = "../../stacks-common"
 default-features = false
 
 [features]
-clarity-wasm = ["stackslib/clarity-wasm", "stacks-common/clarity-wasm"]
+clarity-wasm = ["clar2wasm", "stackslib/clarity-wasm", "stacks-common/clarity-wasm"]

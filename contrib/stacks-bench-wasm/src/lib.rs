@@ -14,111 +14,20 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod db;
-mod plot;
 
-use std::path::Path;
 use std::time::Instant;
 
-use rusqlite::Connection;
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::sqlite::NO_PARAMS;
-use stackslib::burnchains::PoxConstants;
-use stackslib::burnchains::db::BurnchainDB;
 use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
-use stackslib::chainstate::burn::sortition;
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
 use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
-use stackslib::chainstate::stacks::index::marf::{MARF, MARFOpenOpts, MarfConnection};
 use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
-use stackslib::clarity::vm::database::{ClarityDatabase, RollbackWrapper};
-use stackslib::clarity_vm::database::marf::PersistentWritableMarfStore;
 use stackslib::config::Config;
 
 use crate::db::BenchDatabase;
-
-pub fn command_compile(
-    chain_db: String,
-    start_block: u64,
-    end_block: u64,
-    conf: Config,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let chain_state_path = format!("{chain_db}/chainstate/");
-
-    let (mut chainstate, _) = StacksChainState::open(
-        conf.is_mainnet(),
-        conf.burnchain.chain_id,
-        &chain_state_path,
-        None,
-    )?;
-
-    let conn = chainstate.nakamoto_blocks_db();
-
-    let query = format!(
-        "SELECT index_block_hash \
-         FROM nakamoto_staging_blocks \
-         WHERE orphaned = 0 \
-           AND height BETWEEN {start_block} and {end_block}"
-    );
-
-    let mut stmt = conn.prepare(&query)?;
-    let mut hashes_set = stmt.query(NO_PARAMS)?;
-
-    let mut block_hashes: Vec<String> = vec![];
-    while let Ok(Some(row)) = hashes_set.next() {
-        block_hashes.push(row.get(1)?);
-    }
-
-    let mut blocks = Vec::with_capacity(block_hashes.len());
-    for block_hash in block_hashes {
-        let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
-        let (block, _) = conn.get_nakamoto_block(&block_id)?.unwrap();
-        blocks.push(block);
-    }
-
-    // let marf_path = format!("{chain_db}/chainstate/vm/clarity/marf.sqlite");
-    // let headers_path = format!("{chain_db}/headers.sqlite");
-    // let burn_path = format!("{chain_db}/burnchain/burnchain.sqlite");
-    //
-    // let headers_db = Connection::open(headers_path)?;
-    // let burn_db = Connection::open(burn_path)?;
-
-    let marf = MARF::<StacksBlockId>::from_path(&marf_path, MARFOpenOpts::default())?;
-
-    let burnstate_path = format!("{chain_db}/burnchain");
-    let burnstate_db = BurnchainDB::open(&burnstate_path, true)?;
-
-    let (mut chainstate_tx, clarity_instance) = chainstate.chainstate_tx_begin()?;
-
-    let clarity_db = ClarityDatabase::new(_, &chainstate_tx, &burnstate_db)?;
-
-    println!("Processing contracts of {} blocks", blocks.len());
-
-    for block in blocks {
-        for tx in block.txs.iter() {
-            match &tx.payload {
-                TransactionPayload::ContractCall(contract_call) => {
-                    let contract_id = contract_call.contract_identifier();
-
-                    let (tx, instance) = chainstate.chainstate_tx_begin()?;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    Ok(())
-}
-
-pub fn command_graph(
-    bench_db: String,
-    path: impl AsRef<Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut bench_db = BenchDatabase::open(bench_db)?;
-    plot::write_plot(&mut bench_db, path)?;
-    Ok(())
-}
 
 pub fn command_bench(
     chain_db: String,
@@ -126,7 +35,10 @@ pub fn command_bench(
     start_block: u64,
     end_block: u64,
     conf: Config,
-) -> Result<(), ChainstateError> {
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "clarity-wasm")]
+    ensure_compiled(&chain_db, start_block, end_block, &conf)?;
+
     let mut bench_db = BenchDatabase::open(bench_db)?;
 
     let chain_state_path = format!("{chain_db}/chainstate/");
@@ -503,6 +415,109 @@ fn replay_block_nakamoto(
         // succeeds, since *we have already processed* the block.
         return Err(e);
     };
+
+    Ok(())
+}
+
+#[cfg(feature = "clarity-wasm")]
+fn ensure_compiled(
+    chain_db: &str,
+    start_block: u64,
+    end_block: u64,
+    conf: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use stackslib::burnchains::PoxConstants;
+    use stackslib::chainstate::stacks::index::marf::{MARF, MARFOpenOpts};
+    use stackslib::clarity::vm::database::ClarityDatabase;
+    use stackslib::clarity_vm::database::marf::PersistentWritableMarfStore;
+
+    let chain_state_path = format!("{chain_db}/chainstate/");
+
+    let (mut chainstate, _) = StacksChainState::open(
+        conf.is_mainnet(),
+        conf.burnchain.chain_id,
+        &chain_state_path,
+        None,
+    )?;
+
+    let conn = chainstate.nakamoto_blocks_db();
+
+    let query = format!(
+        "SELECT index_block_hash \
+         FROM nakamoto_staging_blocks \
+         WHERE orphaned = 0 \
+           AND height BETWEEN {start_block} and {end_block}"
+    );
+
+    let mut stmt = conn.prepare(&query)?;
+    let mut hashes_set = stmt.query(NO_PARAMS)?;
+
+    let mut block_hashes: Vec<String> = vec![];
+
+    while let Ok(Some(row)) = hashes_set.next() {
+        block_hashes.push(row.get(0)?);
+    }
+
+    drop(hashes_set);
+    drop(stmt);
+
+    let mut blocks = Vec::with_capacity(block_hashes.len());
+    for block_hash in block_hashes {
+        let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
+        let (block, _) = conn.get_nakamoto_block(&block_id)?.unwrap();
+        blocks.push(block);
+    }
+
+    let sortition_path = format!("{chain_db}/burnchain/sortition");
+    let sortition_db = SortitionDB::open(&sortition_path, true, PoxConstants::mainnet_default())?;
+
+    println!("Opened sortition database");
+
+    let marf_path = format!("{chain_db}/chainstate/vm/clarity/marf.sqlite");
+    let mut marf = MARF::<StacksBlockId>::from_path(&marf_path, MARFOpenOpts::default())?;
+
+    println!("Opened MARF database");
+
+    let mut marf_store = PersistentWritableMarfStore {
+        chain_tip: sortition_db.get_canonical_stacks_tip_block_id(),
+        marf: marf.begin_tx()?,
+    };
+
+    println!("Processing contracts of {} blocks", blocks.len());
+
+    for (i, block) in blocks.iter().enumerate() {
+        println!("Processing contracts of block {}/{}", i + 1, blocks.len());
+
+        let block_id = block.header.block_id();
+        let sortition_tx = sortition_db.index_handle_at_block(&chainstate, &block_id)?;
+        let (chainstate_tx, _clarity_instance) = chainstate.chainstate_tx_begin()?;
+
+        let mut clarity_db = ClarityDatabase::new(&mut marf_store, &chainstate_tx, &sortition_tx);
+
+        clarity_db.begin();
+
+        for tx in block.txs.iter() {
+            if let TransactionPayload::ContractCall(contract_call) = &tx.payload {
+                let contract_id = contract_call.contract_identifier();
+                let mut contract = clarity_db.get_contract(&contract_id)?;
+
+                if contract.contract_context.wasm_module.is_none() {
+                    println!("Compiling {contract_id}");
+
+                    let contract_analysis = clarity_db
+                        .load_contract_analysis(&contract_id)?
+                        .expect("Expected to find a contract analysis");
+                    let mut module = clar2wasm::compile_contract(contract_analysis)
+                        .expect("Compiling contract should succeed");
+                    contract.contract_context.wasm_module = Some(module.emit_wasm());
+
+                    clarity_db.insert_or_update_contract(&contract_id, contract)?;
+                }
+            }
+        }
+
+        clarity_db.commit()?;
+    }
 
     Ok(())
 }

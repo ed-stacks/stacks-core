@@ -384,9 +384,9 @@ impl MarfedKV {
 /// given chain tip.
 pub struct PersistentWritableMarfStore<'a> {
     /// The chain tip from which reads and writes will be indexed.
-    chain_tip: StacksBlockId,
+    pub chain_tip: StacksBlockId,
     /// The transaction to the MARF instance
-    marf: MarfTransaction<'a, StacksBlockId>,
+    pub marf: MarfTransaction<'a, StacksBlockId>,
 }
 
 /// A wrapper around a MARF handle which allows only read access to the MARF's keys off of a given

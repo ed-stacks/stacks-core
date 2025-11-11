@@ -15,75 +15,46 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use stackslib::config::{Config, ConfigFile};
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Runs benchmarks
-    Bench {
-        /// Path to the blockchain database
-        chain_db: PathBuf,
-        /// Height of the first block to replay (inclusive)
-        start_height: u64,
-        /// Height of the last block to replay (inclusive)
-        end_height: u64,
-        /// Path to a custom network configuration file
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    /// Plot the captured data
-    Plot {
-        /// Output path for the produced plots
-        output_path: PathBuf,
-    },
-}
 
 /// Execute slices of the blockchain by block height, inserting some captured
 /// values in the benchmark database
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
+    /// Path to the blockchain database
+    chain_db: PathBuf,
     /// Path to the benchmarks database
     bench_db: PathBuf,
-    #[command(subcommand)]
-    command: Commands,
+    /// Height of the first block to replay (inclusive)
+    start_height: u64,
+    /// Height of the last block to replay (inclusive)
+    end_height: u64,
+    /// Path to a custom network configuration file
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    match args.command {
-        Commands::Bench {
-            chain_db,
-            start_height,
-            end_height,
-            config,
-        } => {
-            let config_file = match config {
-                None => ConfigFile::mainnet(),
-                Some(config_path) => ConfigFile::from_path(&*config_path.to_string_lossy())
-                    .expect("Failed loading network configfile"),
-            };
-            let config = Config::from_config_file(config_file, false)
-                .expect("Failed loading network config from file");
+    let config_file = match args.config {
+        None => ConfigFile::mainnet(),
+        Some(config_path) => ConfigFile::from_path(&*config_path.to_string_lossy())
+            .expect("Failed loading network configfile"),
+    };
+    let config = Config::from_config_file(config_file, false)
+        .expect("Failed loading network config from file");
 
-            stacks_bench_wasm::command_bench(
-                chain_db.to_string_lossy().to_string(),
-                args.bench_db.to_string_lossy().to_string(),
-                start_height,
-                end_height,
-                config,
-            )?;
-        }
-        Commands::Plot { output_path } => {
-            stacks_bench_wasm::command_graph(
-                args.bench_db.to_string_lossy().to_string(),
-                output_path.to_string_lossy().to_string(),
-            )?;
-        }
-    }
+    stacks_bench_wasm::command_bench(
+        args.chain_db.to_string_lossy().to_string(),
+        args.bench_db.to_string_lossy().to_string(),
+        args.start_height,
+        args.end_height,
+        config,
+    )?;
 
     Ok(())
 }

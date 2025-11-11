@@ -710,6 +710,17 @@ impl<'a> ClarityDatabase<'a> {
         }
     }
 
+    fn insert_or_update_metadata<T: ClaritySerializable>(
+        &mut self,
+        contract_identifier: &QualifiedContractIdentifier,
+        key: &str,
+        data: &T,
+    ) -> Result<()> {
+        self.store
+            .insert_metadata(contract_identifier, key, &data.serialize())
+            .map_err(|e| e.into())
+    }
+
     fn fetch_metadata<T>(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
@@ -829,6 +840,19 @@ impl<'a> ClarityDatabase<'a> {
             ContractDataVarName::Contract.as_str(),
         );
         self.insert_metadata(contract_identifier, &key, &contract)?;
+        Ok(())
+    }
+
+    pub fn insert_or_update_contract(
+        &mut self,
+        contract_identifier: &QualifiedContractIdentifier,
+        contract: Contract,
+    ) -> Result<()> {
+        let key = ClarityDatabase::make_metadata_key(
+            StoreType::Contract,
+            ContractDataVarName::Contract.as_str(),
+        );
+        self.insert_or_update_metadata(contract_identifier, &key, &contract)?;
         Ok(())
     }
 
