@@ -38,6 +38,17 @@ enum Commands {
         /// Output path for the produced plots
         output_path: PathBuf,
     },
+    /// Compile contracts for a block range
+    Compile {
+        /// Path to the blockchain database
+        chain_db: PathBuf,
+        /// Height of the first block to compile contracts for (inclusive)
+        start_height: u64,
+        /// Height of the last block to compile contracts for (inclusive)
+        end_height: u64,
+        /// Path to a custom network configuration file
+        config: Option<PathBuf>,
+    }
 }
 
 /// Execute slices of the blockchain by block height, inserting some captured
@@ -81,6 +92,26 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
             stacks_bench_wasm::command_graph(
                 args.bench_db.to_string_lossy().to_string(),
                 output_path.to_string_lossy().to_string(),
+            )?;
+        }
+        Commands::Compile {
+            chain_db,
+            start_height,
+            end_height,
+            config,
+        } => {
+            let config_file = match config {
+                None => ConfigFile::mainnet(),
+                Some(config_path) => ConfigFile::from_path(&*config_path.to_string_lossy())
+                    .expect("Failed loading network configfile"),
+            };
+            let config = Config::from_config_file(config_file, false)
+                .expect("Failed loading network config from file");
+            stacks_bench_wasm::command_compile(
+                chain_db.to_string_lossy().to_string(),
+                start_height,
+                end_height,
+                config,
             )?;
         }
     }

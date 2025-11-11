@@ -9,6 +9,7 @@ publish = false
 clap = { version = "4.5.51", features = ["derive"] }
 rusqlite = { workspace = true, features = ["functions"] }
 plotters = { version = "0.3.7" }
+clar2wasm = { workspace = true }
 
 [dependencies.libstackerdb]
 path = "../../libstackerdb"

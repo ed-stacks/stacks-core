@@ -13,79 +13,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod db;
-mod plot;
-
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
-use stacks_common::types::chainstate::StacksBlockId;
+use stackslib::clarity::vm::analysis::types::ContractAnalysis;
+use stackslib::clarity::vm::clarity::{ClarityConnection, ClarityReadOnlyConnection};
+use stackslib::clarity::vm::contracts::Contract;
+use stackslib::clarity::vm::database::clarity_db::ContractDataVarName;
+use stackslib::clarity::vm::database::structures::ClaritySerializable;
+use stackslib::clarity::vm::database::HeadersDBConn;
+use stackslib::clarity::vm::errors::{Error as clarity_error, WasmError};
+use stackslib::clarity::vm::types::QualifiedContractIdentifier;
+use stacks_common::types::chainstate::{BlockHeaderHash, ConsensusHash, StacksBlockId};
 use stacks_common::types::sqlite::NO_PARAMS;
-use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
+use stackslib::chainstate::burn::db::sortdb::{get_ancestor_sort_id, SortitionDB};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
-use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
-use stackslib::chainstate::stacks::index::marf::{MARF, MarfConnection};
-use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
-use stackslib::clarity::vm::database::{ClarityDatabase, RollbackWrapper};
-use stackslib::clarity_vm::database::marf::PersistentWritableMarfStore;
+use stackslib::chainstate::stacks::db::StacksChainState;
+use stackslib::chainstate::stacks::{Error as ChainstateError, StacksTransaction, TransactionPayload};
 use stackslib::config::Config;
 
 use crate::db::BenchDatabase;
-
-pub fn command_compile(
-    chain_db: String,
-    start_block: u64,
-    end_block: u64,
-    conf: Config,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let chain_state_path = format!("{chain_db}/chainstate/");
-
-    let (chainstate, _) = StacksChainState::open(
-        conf.is_mainnet(),
-        conf.burnchain.chain_id,
-        &chain_state_path,
-        None,
-    )?;
-
-    let conn = chainstate.nakamoto_blocks_db();
-
-    let query = format!(
-        "SELECT index_block_hash \
-         FROM nakamoto_staging_blocks \
-         WHERE orphaned = 0 \
-           AND height BETWEEN {start_block} and {end_block}"
-    );
-
-    let mut stmt = conn.prepare(&query)?;
-    let mut hashes_set = stmt.query(NO_PARAMS)?;
-
-    let mut block_hashes: Vec<String> = vec![];
-    while let Ok(Some(row)) = hashes_set.next() {
-        block_hashes.push(row.get(0)?);
-    }
-
-    MARF::from_path(path, open_opts)
-
-    println!("Processing contracts of {} blocks", block_hashes.len());
-
-    for block_hash in block_hashes {
-        let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
-        let (block, _) = conn.get_nakamoto_block(&block_id)?.unwrap();
-
-        for tx in block.txs.iter() {
-            match &tx.payload {
-                TransactionPayload::ContractCall(contract_call) => {
-                    let contract_id = contract_call.contract_identifier();
-                }
-                _ => {}
-            }
-        }
-    }
-
-    Ok(())
-}
 
 pub fn command_graph(
     bench_db: String,
@@ -144,6 +94,20 @@ pub fn command_bench(
     Ok(())
 }
 
+pub fn command_compile(
+    chain_db: String,
+    start_height: u64,
+    end_height: u64,
+    conf: Config,
+) -> Result<(), ChainstateError> {
+    if start_height > end_height {
+        return Err(ChainstateError::InvalidStacksBlock(
+            "start height greater than end height".into(),
+        ));
+    }
+
+    command_compile_impl(chain_db, start_height, end_height, conf)
+}
 /// Fetch and process a NakamotoBlock from database and call `replay_block_nakamoto()` to validate
 fn replay_naka_staging_block(
     db_path: &str,
@@ -197,6 +161,264 @@ fn replay_naka_staging_block(
         calls,
         error,
     })
+}
+
+fn load_block_transactions(
+    chainstate: &mut StacksChainState,
+    block_id: &StacksBlockId,
+    consensus_hash: &ConsensusHash,
+    block_hash: &BlockHeaderHash,
+) -> Result<Vec<StacksTransaction>, ChainstateError> {
+    // Prefer the already-materialized Nakamoto block entry.  Fallback to
+    // loading from disk if the block was not cached in the MARF staging table.
+    if let Some((nakamoto_block, _)) = chainstate
+        .nakamoto_blocks_db()
+        .get_nakamoto_block(block_id)?
+    {
+        Ok(nakamoto_block.txs)
+    } else {
+        let blocks_path = chainstate.blocks_path.clone();
+        let maybe_block =
+            StacksChainState::load_block(&blocks_path, consensus_hash, block_hash)?;
+        if let Some(block) = maybe_block {
+            Ok(block.txs)
+        } else {
+            Err(ChainstateError::NoSuchBlockError)
+        }
+    }
+}
+
+/// Outcome of attempting to compile a contract for a block range.
+#[derive(Debug, PartialEq, Eq)]
+enum ContractCompileOutcome {
+    /// The contract already had a WASM module stored alongside it.
+    AlreadyCompiled,
+    /// The contract has been successfully compiled and persisted.
+    Compiled,
+    /// The contract could not be found in chainstate at this height.
+    Missing,
+}
+
+fn ensure_contract_compiled(
+    chainstate: &mut StacksChainState,
+    sortdb: &mut SortitionDB,
+    block_id: &StacksBlockId,
+    contract_id: &QualifiedContractIdentifier,
+) -> Result<ContractCompileOutcome, ChainstateError> {
+    let mut sort_handle = sortdb.index_handle_at_tip();
+
+    // Pull the immutable snapshot for this block so we can see the contract
+    // exactly as it existed when the block executed.  If the contract is
+    // missing or already has a WASM module there is nothing to do.
+    let maybe_plan = chainstate.with_read_only_clarity_tx(&sort_handle, block_id, |conn| {
+        gather_compile_plan(conn, contract_id)
+    });
+
+    let Some(plan_result) = maybe_plan else {
+        return Ok(ContractCompileOutcome::Missing);
+    };
+
+    match plan_result? {
+        None => Ok(ContractCompileOutcome::AlreadyCompiled),
+        Some(plan) => {
+            persist_compiled_contract(chainstate, sortdb, contract_id, plan)?;
+            Ok(ContractCompileOutcome::Compiled)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CompilePlan {
+    contract: Contract,
+    analysis: ContractAnalysis,
+}
+
+/// Collect the serialized contract and its stored analysis so we can rebuild
+/// the WASM module. Returns `None` if we cannot (or should not) compile.
+fn gather_compile_plan(
+    conn: &mut ClarityReadOnlyConnection<'_>,
+    contract_id: &QualifiedContractIdentifier,
+) -> Result<Option<CompilePlan>, ChainstateError> {
+    let epoch = conn.get_epoch();
+
+    let maybe_contract = conn.with_clarity_db_readonly(|db| db.get_contract(contract_id));
+    let mut contract = match maybe_contract? {
+        Some(contract) => contract,
+        None => return Ok(None),
+    };
+
+    if contract.contract_context.wasm_module.is_some() {
+        return Ok(None);
+    }
+
+    let analysis = conn.with_clarity_db_readonly(|db| db.load_contract_analysis(contract_id))?;
+    let Some(analysis) = analysis else {
+        return Err(ChainstateError::InvalidStacksBlock(
+            format!("Missing analysis for contract {}", contract_id).into(),
+        ));
+    };
+
+    // The stored analysis may have been generated under an earlier epoch.
+    // Re-canonicalize so the regenerated WASM matches the metadata format that
+    // nodes expect when they read it back out of the DB.
+    let mut analysis = analysis;
+    analysis.canonicalize_types(&epoch);
+
+    Ok(Some(CompilePlan { contract, analysis }))
+}
+
+fn persist_compiled_contract(
+    chainstate: &mut StacksChainState,
+    sortdb: &mut SortitionDB,
+    contract_id: &QualifiedContractIdentifier,
+    mut plan: CompilePlan,
+) -> Result<(), ChainstateError> {
+    let wasm_module = clar2wasm::compile_contract(plan.analysis.clone()).map_err(|e| {
+        ChainstateError::ClarityError(clarity_error::Wasm(WasmError::WasmGeneratorError(
+            e.message(),
+        )))
+    })?;
+    plan.contract
+        .contract_context
+        .set_wasm_module(wasm_module.emit_wasm());
+
+    // Convert contract to serialized form
+    let serialized_contract = plan.contract.serialize();
+
+    // Open a scoped Clarity transaction so we can reuse the same metadata write
+    // paths as block processing. We intentionally avoid advancing the block
+    // tip; this only mutates the side-store entry for the contract.
+    let headers_conn = HeadersDBConn(chainstate.index_conn());
+    let mut sort_handle = sortdb.index_handle_at_tip();
+    let tip = SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
+    let current_tip = StacksBlockId::new(&tip.0, &tip.1);
+
+    let mut clarity_block = chainstate
+        .clarity_state
+        .begin_block(&current_tip, &current_tip, &headers_conn, &sort_handle);
+
+    clarity_block.as_transaction(|tx| {
+        tx.with_clarity_db(|db| {
+            db.set_metadata(
+                contract_id,
+                ContractDataVarName::Contract.as_str(),
+                &serialized_contract,
+            )
+            .map_err(|e| clarity_error::from(e))
+        })
+    })?;
+
+    Ok(())
+}
+
+fn command_compile_impl(
+    chain_db: String,
+    start_height: u64,
+    end_height: u64,
+    conf: Config,
+) -> Result<(), ChainstateError> {
+    let chain_state_path = format!("{chain_db}/chainstate/");
+    let sort_db_path = format!("{chain_db}/burnchain/sortition");
+
+    let (mut chainstate, _) = StacksChainState::open(
+        conf.is_mainnet(),
+        conf.burnchain.chain_id,
+        &chain_state_path,
+        None,
+    )?;
+
+    let burnchain = conf.get_burnchain();
+    let epochs = conf.burnchain.get_epoch_list();
+    let mut sortdb = SortitionDB::connect(
+        &sort_db_path,
+        burnchain.first_block_height,
+        &burnchain.first_block_hash,
+        u64::from(burnchain.first_block_timestamp),
+        &epochs,
+        burnchain.pox_constants.clone(),
+        None,
+        true,
+    )?;
+
+    let Some(canonical_tip) =
+        NakamotoChainState::get_canonical_block_header(chainstate.db(), &sortdb)?
+    else {
+        return Err(ChainstateError::NoSuchBlockError);
+    };
+
+    if end_height > canonical_tip.stacks_block_height {
+        return Err(ChainstateError::InvalidStacksBlock(
+            format!(
+                "end height {} exceeds canonical tip height {}",
+                end_height, canonical_tip.stacks_block_height
+            )
+            .into(),
+        ));
+    }
+
+    let mut headers =
+        StacksChainState::get_ancestors_headers(chainstate.db(), canonical_tip, start_height)?;
+    headers.retain(|header| header.stacks_block_height >= start_height
+        && header.stacks_block_height <= end_height);
+    headers.sort_by_key(|header| header.stacks_block_height);
+
+    let mut compiled_contracts = HashSet::new();
+    let mut total_compiled = 0;
+    let mut total_seen = 0;
+
+    // Iterate the canonical headers from oldest → newest, reusing a simple map
+    // so we never compile the same contract twice.
+    for header in headers {
+        let block_id = header.index_block_hash();
+        let consensus_hash = header.consensus_hash.clone();
+        let block_hash = header.anchored_header.block_hash();
+
+        let txs = load_block_transactions(&mut chainstate, &block_id, &consensus_hash, &block_hash)?;
+
+        for tx in txs {
+            total_seen += 1;
+
+            let TransactionPayload::ContractCall(contract_call) = &tx.payload else {
+                continue;
+            };
+
+            let contract_id = contract_call.to_clarity_contract_id();
+            if compiled_contracts.contains(&contract_id) {
+                continue;
+            }
+
+            match ensure_contract_compiled(
+                &mut chainstate,
+                &mut sortdb,
+                &block_id,
+                &contract_id,
+            )? {
+                ContractCompileOutcome::AlreadyCompiled => {
+                    compiled_contracts.insert(contract_id);
+                }
+                ContractCompileOutcome::Compiled => {
+                    println!(
+                        "Compiled contract {} (height {})",
+                        contract_id, header.stacks_block_height
+                    );
+                    compiled_contracts.insert(contract_id);
+                    total_compiled += 1;
+                }
+                ContractCompileOutcome::Missing => {
+                    println!(
+                        "Contract {} not found at height {}, skipping",
+                        contract_id, header.stacks_block_height
+                    );
+                }
+            }
+        }
+    }
+
+    println!(
+        "Processed {} contract calls, compiled {} contracts",
+        total_seen, total_compiled
+    );
+    Ok(())
 }
 
 fn replay_block_nakamoto(
