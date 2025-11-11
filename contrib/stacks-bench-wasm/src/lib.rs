@@ -19,14 +19,18 @@ mod plot;
 use std::path::Path;
 use std::time::Instant;
 
+use rusqlite::Connection;
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::sqlite::NO_PARAMS;
+use stackslib::burnchains::PoxConstants;
+use stackslib::burnchains::db::BurnchainDB;
 use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
+use stackslib::chainstate::burn::sortition;
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
 use stackslib::chainstate::stacks::db::StacksChainState;
 use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
-use stackslib::chainstate::stacks::index::marf::{MARF, MarfConnection};
+use stackslib::chainstate::stacks::index::marf::{MARF, MARFOpenOpts, MarfConnection};
 use stackslib::chainstate::stacks::{Error as ChainstateError, TransactionPayload};
 use stackslib::clarity::vm::database::{ClarityDatabase, RollbackWrapper};
 use stackslib::clarity_vm::database::marf::PersistentWritableMarfStore;
@@ -42,7 +46,7 @@ pub fn command_compile(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let chain_state_path = format!("{chain_db}/chainstate/");
 
-    let (chainstate, _) = StacksChainState::open(
+    let (mut chainstate, _) = StacksChainState::open(
         conf.is_mainnet(),
         conf.burnchain.chain_id,
         &chain_state_path,
@@ -63,21 +67,41 @@ pub fn command_compile(
 
     let mut block_hashes: Vec<String> = vec![];
     while let Ok(Some(row)) = hashes_set.next() {
-        block_hashes.push(row.get(0)?);
+        block_hashes.push(row.get(1)?);
     }
 
-    MARF::from_path(path, open_opts)
-
-    println!("Processing contracts of {} blocks", block_hashes.len());
-
+    let mut blocks = Vec::with_capacity(block_hashes.len());
     for block_hash in block_hashes {
         let block_id = StacksBlockId::from_hex(&block_hash).unwrap();
         let (block, _) = conn.get_nakamoto_block(&block_id)?.unwrap();
+        blocks.push(block);
+    }
 
+    // let marf_path = format!("{chain_db}/chainstate/vm/clarity/marf.sqlite");
+    // let headers_path = format!("{chain_db}/headers.sqlite");
+    // let burn_path = format!("{chain_db}/burnchain/burnchain.sqlite");
+    //
+    // let headers_db = Connection::open(headers_path)?;
+    // let burn_db = Connection::open(burn_path)?;
+
+    let marf = MARF::<StacksBlockId>::from_path(&marf_path, MARFOpenOpts::default())?;
+
+    let burnstate_path = format!("{chain_db}/burnchain");
+    let burnstate_db = BurnchainDB::open(&burnstate_path, true)?;
+
+    let (mut chainstate_tx, clarity_instance) = chainstate.chainstate_tx_begin()?;
+
+    let clarity_db = ClarityDatabase::new(_, &chainstate_tx, &burnstate_db)?;
+
+    println!("Processing contracts of {} blocks", blocks.len());
+
+    for block in blocks {
         for tx in block.txs.iter() {
             match &tx.payload {
                 TransactionPayload::ContractCall(contract_call) => {
                     let contract_id = contract_call.contract_identifier();
+
+                    let (tx, instance) = chainstate.chainstate_tx_begin()?;
                 }
                 _ => {}
             }
