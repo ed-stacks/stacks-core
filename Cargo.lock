@@ -3994,6 +3994,7 @@ name = "stacks-bench-wasm"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "clar2wasm",
  "libstackerdb",
  "plotters",
  "rusqlite",

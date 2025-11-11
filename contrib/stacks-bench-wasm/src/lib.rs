@@ -13,29 +13,35 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod db;
+mod plot;
+
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
-use stackslib::clarity::vm::analysis::types::ContractAnalysis;
-use stackslib::clarity::vm::clarity::{ClarityConnection, ClarityReadOnlyConnection};
-use stackslib::clarity::vm::contracts::Contract;
-use stackslib::clarity::vm::database::clarity_db::ContractDataVarName;
-use stackslib::clarity::vm::database::structures::ClaritySerializable;
-use stackslib::clarity::vm::database::HeadersDBConn;
-use stackslib::clarity::vm::errors::{Error as clarity_error, WasmError};
-use stackslib::clarity::vm::types::QualifiedContractIdentifier;
 use stacks_common::types::chainstate::{BlockHeaderHash, ConsensusHash, StacksBlockId};
 use stacks_common::types::sqlite::NO_PARAMS;
-use stackslib::chainstate::burn::db::sortdb::{get_ancestor_sort_id, SortitionDB};
+use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
-use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
 use stackslib::chainstate::stacks::db::StacksChainState;
-use stackslib::chainstate::stacks::{Error as ChainstateError, StacksTransaction, TransactionPayload};
+use stackslib::chainstate::stacks::db::blocks::DummyEventDispatcher;
+use stackslib::chainstate::stacks::{
+    Error as ChainstateError, StacksTransaction, TransactionPayload,
+};
+use stackslib::clarity::vm::analysis::types::ContractAnalysis;
+use stackslib::clarity::vm::clarity::ClarityConnection;
+use stackslib::clarity::vm::contracts::Contract;
+use stackslib::clarity::vm::database::ClaritySerializable;
+use stackslib::clarity::vm::database::clarity_db::ContractDataVarName;
+use stackslib::clarity::vm::diagnostic::DiagnosableError;
+use stackslib::clarity::vm::errors::{Error as clarity_error, WasmError};
+use stackslib::clarity::vm::types::QualifiedContractIdentifier;
+use stackslib::clarity_vm::database::HeadersDBConn;
 use stackslib::config::Config;
 
-use crate::db::BenchDatabase;
+use db::BenchDatabase;
 
 pub fn command_graph(
     bench_db: String,
@@ -178,8 +184,7 @@ fn load_block_transactions(
         Ok(nakamoto_block.txs)
     } else {
         let blocks_path = chainstate.blocks_path.clone();
-        let maybe_block =
-            StacksChainState::load_block(&blocks_path, consensus_hash, block_hash)?;
+        let maybe_block = StacksChainState::load_block(&blocks_path, consensus_hash, block_hash)?;
         if let Some(block) = maybe_block {
             Ok(block.txs)
         } else {
@@ -205,7 +210,7 @@ fn ensure_contract_compiled(
     block_id: &StacksBlockId,
     contract_id: &QualifiedContractIdentifier,
 ) -> Result<ContractCompileOutcome, ChainstateError> {
-    let mut sort_handle = sortdb.index_handle_at_tip();
+    let sort_handle = sortdb.index_handle_at_tip();
 
     // Pull the immutable snapshot for this block so we can see the contract
     // exactly as it existed when the block executed.  If the contract is
@@ -227,7 +232,6 @@ fn ensure_contract_compiled(
     }
 }
 
-#[derive(Debug)]
 struct CompilePlan {
     contract: Contract,
     analysis: ContractAnalysis,
@@ -236,16 +240,12 @@ struct CompilePlan {
 /// Collect the serialized contract and its stored analysis so we can rebuild
 /// the WASM module. Returns `None` if we cannot (or should not) compile.
 fn gather_compile_plan(
-    conn: &mut ClarityReadOnlyConnection<'_>,
+    conn: &mut impl ClarityConnection,
     contract_id: &QualifiedContractIdentifier,
 ) -> Result<Option<CompilePlan>, ChainstateError> {
     let epoch = conn.get_epoch();
 
-    let maybe_contract = conn.with_clarity_db_readonly(|db| db.get_contract(contract_id));
-    let mut contract = match maybe_contract? {
-        Some(contract) => contract,
-        None => return Ok(None),
-    };
+    let contract = conn.with_clarity_db_readonly(|db| db.get_contract(contract_id))?;
 
     if contract.contract_context.wasm_module.is_some() {
         return Ok(None);
@@ -273,11 +273,12 @@ fn persist_compiled_contract(
     contract_id: &QualifiedContractIdentifier,
     mut plan: CompilePlan,
 ) -> Result<(), ChainstateError> {
-    let wasm_module = clar2wasm::compile_contract(plan.analysis.clone()).map_err(|e| {
-        ChainstateError::ClarityError(clarity_error::Wasm(WasmError::WasmGeneratorError(
-            e.message(),
-        )))
+    let mut wasm_module = clar2wasm::compile_contract(plan.analysis.clone()).map_err(|e| {
+        ChainstateError::ClarityError(
+            clarity_error::Wasm(WasmError::WasmGeneratorError(e.message())).into(),
+        )
     })?;
+
     plan.contract
         .contract_context
         .set_wasm_module(wasm_module.emit_wasm());
@@ -289,13 +290,16 @@ fn persist_compiled_contract(
     // paths as block processing. We intentionally avoid advancing the block
     // tip; this only mutates the side-store entry for the contract.
     let headers_conn = HeadersDBConn(chainstate.index_conn());
-    let mut sort_handle = sortdb.index_handle_at_tip();
+    let sort_handle = sortdb.index_handle_at_tip();
     let tip = SortitionDB::get_canonical_stacks_chain_tip_hash(sortdb.conn())?;
     let current_tip = StacksBlockId::new(&tip.0, &tip.1);
 
-    let mut clarity_block = chainstate
-        .clarity_state
-        .begin_block(&current_tip, &current_tip, &headers_conn, &sort_handle);
+    let mut clarity_block = chainstate.clarity_state.begin_block(
+        &current_tip,
+        &current_tip,
+        &headers_conn,
+        &sort_handle,
+    );
 
     clarity_block.as_transaction(|tx| {
         tx.with_clarity_db(|db| {
@@ -304,7 +308,7 @@ fn persist_compiled_contract(
                 ContractDataVarName::Contract.as_str(),
                 &serialized_contract,
             )
-            .map_err(|e| clarity_error::from(e))
+            .map_err(|e| clarity_error::from(e).into())
         })
     })?;
 
@@ -358,8 +362,9 @@ fn command_compile_impl(
 
     let mut headers =
         StacksChainState::get_ancestors_headers(chainstate.db(), canonical_tip, start_height)?;
-    headers.retain(|header| header.stacks_block_height >= start_height
-        && header.stacks_block_height <= end_height);
+    headers.retain(|header| {
+        header.stacks_block_height >= start_height && header.stacks_block_height <= end_height
+    });
     headers.sort_by_key(|header| header.stacks_block_height);
 
     let mut compiled_contracts = HashSet::new();
@@ -373,7 +378,8 @@ fn command_compile_impl(
         let consensus_hash = header.consensus_hash.clone();
         let block_hash = header.anchored_header.block_hash();
 
-        let txs = load_block_transactions(&mut chainstate, &block_id, &consensus_hash, &block_hash)?;
+        let txs =
+            load_block_transactions(&mut chainstate, &block_id, &consensus_hash, &block_hash)?;
 
         for tx in txs {
             total_seen += 1;
@@ -387,12 +393,7 @@ fn command_compile_impl(
                 continue;
             }
 
-            match ensure_contract_compiled(
-                &mut chainstate,
-                &mut sortdb,
-                &block_id,
-                &contract_id,
-            )? {
+            match ensure_contract_compiled(&mut chainstate, &mut sortdb, &block_id, &contract_id)? {
                 ContractCompileOutcome::AlreadyCompiled => {
                     compiled_contracts.insert(contract_id);
                 }

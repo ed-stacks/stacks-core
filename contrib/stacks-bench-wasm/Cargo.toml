@@ -9,7 +9,7 @@ publish = false
 clap = { version = "4.5.51", features = ["derive"] }
 rusqlite = { workspace = true, features = ["functions"] }
 plotters = { version = "0.3.7" }
-clar2wasm = { workspace = true }
+clar2wasm = { git = "https://github.com/stx-labs/clarity-wasm.git", branch = "sync-wasm-develop"}
 
 [dependencies.libstackerdb]
 path = "../../libstackerdb"
