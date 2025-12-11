@@ -18,7 +18,6 @@ pub mod ast;
 pub mod cost;
 pub mod lexer;
 
-use std::string::FromUtf8Error;
 use std::{error, fmt};
 
 pub use analysis::{CheckError, CheckErrors};
@@ -115,8 +114,8 @@ pub enum ShortReturnType {
 /// WasmErrors are errors that *should never* occur.
 /// Test executions may trigger these errors, but if they show up in normal
 /// execution, it indicates a bug in the Wasm compiler or runtime.
-#[cfg(feature = "clarity-wasm")]
 #[derive(Debug)]
+#[cfg(feature = "clarity-wasm")]
 pub enum WasmError {
     WasmGeneratorError(String),
     ModuleNotFound,
@@ -127,7 +126,7 @@ pub enum WasmError {
     WasmCompileFailed(wasmtime::Error),
     UnableToLoadModule(wasmtime::Error),
     UnableToLinkHostFunction(String, wasmtime::Error),
-    UnableToReadIdentifier(FromUtf8Error),
+    UnableToReadIdentifier(std::string::FromUtf8Error),
     UnableToRetrieveIdentifier(i32),
     InvalidClarityName(String),
     UnableToWriteStackPointer(wasmtime::Error),

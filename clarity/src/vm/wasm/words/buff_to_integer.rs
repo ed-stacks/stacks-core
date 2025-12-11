@@ -1,0 +1,109 @@
+use clarity_types::ClarityName;
+
+use crate::vm::types::TypeSignature;
+use crate::vm::wasm::cost::WordCharge;
+use crate::vm::wasm::wasm_generator::{GeneratorError, WasmGenerator};
+use crate::vm::wasm::words::{SimpleWord, Word};
+
+fn traverse_buffer_to_integer(
+    word: &impl SimpleWord,
+    generator: &mut WasmGenerator,
+    builder: &mut walrus::InstrSeqBuilder,
+) -> Result<(), GeneratorError> {
+    word.charge(generator, builder, 0)?;
+
+    let name = word.name();
+
+    let func = generator.func_by_name(&format!("stdlib.{name}"));
+    builder.call(func);
+
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct BuffToUintBe;
+
+impl Word for BuffToUintBe {
+    fn name(&self) -> ClarityName {
+        "buff-to-uint-be".into()
+    }
+}
+
+impl SimpleWord for BuffToUintBe {
+    fn visit(
+        &self,
+        generator: &mut WasmGenerator,
+        builder: &mut walrus::InstrSeqBuilder,
+        _arg_types: &[TypeSignature],
+        _return_type: &TypeSignature,
+    ) -> Result<(), GeneratorError> {
+        traverse_buffer_to_integer(self, generator, builder)
+    }
+}
+
+#[derive(Debug)]
+pub struct BuffToIntBe;
+
+impl Word for BuffToIntBe {
+    fn name(&self) -> ClarityName {
+        "buff-to-int-be".into()
+    }
+}
+
+impl SimpleWord for BuffToIntBe {
+    fn visit(
+        &self,
+        generator: &mut WasmGenerator,
+        builder: &mut walrus::InstrSeqBuilder,
+        _arg_types: &[TypeSignature],
+        _return_type: &TypeSignature,
+    ) -> Result<(), GeneratorError> {
+        // This is the same function as "buff-to-uint-be", with the result interpreted
+        // as i128 instead of u128.
+        traverse_buffer_to_integer(&BuffToUintBe, generator, builder)
+    }
+}
+
+#[derive(Debug)]
+pub struct BuffToUintLe;
+
+impl Word for BuffToUintLe {
+    fn name(&self) -> ClarityName {
+        "buff-to-uint-le".into()
+    }
+}
+
+impl SimpleWord for BuffToUintLe {
+    fn visit(
+        &self,
+        generator: &mut WasmGenerator,
+        builder: &mut walrus::InstrSeqBuilder,
+        _arg_types: &[TypeSignature],
+        _return_type: &TypeSignature,
+    ) -> Result<(), GeneratorError> {
+        traverse_buffer_to_integer(self, generator, builder)
+    }
+}
+
+#[derive(Debug)]
+pub struct BuffToIntLe;
+
+impl Word for BuffToIntLe {
+    fn name(&self) -> ClarityName {
+        "buff-to-int-le".into()
+    }
+}
+
+impl SimpleWord for BuffToIntLe {
+    fn visit(
+        &self,
+        generator: &mut WasmGenerator,
+        builder: &mut walrus::InstrSeqBuilder,
+        _arg_types: &[TypeSignature],
+        _return_type: &TypeSignature,
+    ) -> Result<(), GeneratorError> {
+        // This is the same function as "buff-to-uint-le", with the result interpreted
+        // as i128 instead of u128.
+        traverse_buffer_to_integer(&BuffToUintLe, generator, builder)
+    }
+}

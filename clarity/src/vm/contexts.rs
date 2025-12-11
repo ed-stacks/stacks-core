@@ -29,8 +29,6 @@ use stacks_common::types::StacksEpochId;
 use wasmtime::Engine;
 
 use super::analysis::{self, ContractAnalysis};
-#[cfg(feature = "clarity-wasm")]
-use super::clarity_wasm::call_function;
 use super::EvalHook;
 use crate::vm::ast::ContractAST;
 use crate::vm::callables::{DefinedFunction, FunctionIdentifier};
@@ -52,6 +50,8 @@ use crate::vm::types::{
     TraitIdentifier, TypeSignature, Value,
 };
 use crate::vm::version::ClarityVersion;
+#[cfg(feature = "clarity-wasm")]
+use crate::vm::wasm::wasm_utils::call_function;
 use crate::vm::{ast, eval, is_reserved, stx_transfer_consolidated};
 
 pub const MAX_CONTEXT_DEPTH: u16 = 256;

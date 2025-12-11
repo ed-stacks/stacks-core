@@ -1,4 +1,0 @@
-/target
-**/*.wasm
-**/proptest-regressions
-/tests/contracts/*.wat
