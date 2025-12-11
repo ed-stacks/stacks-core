@@ -16,8 +16,11 @@
 
 pub use clarity_types::errors::{
     Error, IncomparableError, InterpreterError, InterpreterResult, RuntimeErrorType,
-    ShortReturnType, WasmError,
+    ShortReturnType,
 };
+
+#[cfg(feature = "clarity-wasm")]
+pub use clarity_types::errors::WasmError;
 
 pub use crate::vm::analysis::errors::{
     check_argument_count, check_arguments_at_least, check_arguments_at_most, CheckErrors,
@@ -32,7 +35,7 @@ mod test {
     fn error_formats() {
         let t = "(/ 10 0)";
         let expected = "DivisionByZero
- Stack Trace:
+ Stack Trace: 
 _native_:native_div
 ";
 

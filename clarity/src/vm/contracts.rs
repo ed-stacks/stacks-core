@@ -18,13 +18,13 @@ use stacks_common::types::StacksEpochId;
 
 use super::analysis::ContractAnalysis;
 use crate::vm::ast::ContractAST;
-#[cfg(feature = "clarity-wasm")]
-use crate::vm::clarity_wasm::initialize_contract;
 use crate::vm::contexts::{ContractContext, GlobalContext};
 use crate::vm::errors::InterpreterResult as Result;
 use crate::vm::eval_all;
 use crate::vm::types::{PrincipalData, QualifiedContractIdentifier};
 use crate::vm::version::ClarityVersion;
+#[cfg(feature = "clarity-wasm")]
+use crate::vm::wasm::initialize::initialize_contract;
 
 #[derive(Serialize, Deserialize)]
 pub struct Contract {
