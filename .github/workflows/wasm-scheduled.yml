@@ -30,6 +30,7 @@ jobs:
       - name: Run Tests
         run: |
           cargo nextest run \
+          --manifest-path=clarity/Cargo.toml \
           --features test-clarity-v${{ matrix.clarity_version }} \
           --test wasm-generation \
           --test standard

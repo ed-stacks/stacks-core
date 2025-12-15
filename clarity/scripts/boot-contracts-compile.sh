@@ -1,7 +1,8 @@
 #!/bin/bash
 
-BOOT_CONTRACTS_PATH="./tests/contracts/boot-contracts"
-CLAR2WASM_PATH="../target/release"
+SCRIPTS_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+BOOT_CONTRACTS_PATH="$SCRIPTS_PATH/../tests/contracts/boot-contracts"
+CLAR2WASM_PATH="$SCRIPTS_PATH/../../target/release"
 
 declare -a boot_contracts=(
     bns

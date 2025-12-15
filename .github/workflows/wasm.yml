@@ -29,7 +29,7 @@ jobs:
         with:
           components: rustfmt
 
-      - run: cargo fmt -- --config group_imports=StdExternalCrate,imports_granularity=Module --check
+      - run: cargo fmt --manifest-path=clarity/Cargo.toml -- --config group_imports=StdExternalCrate,imports_granularity=Module --check
 
   clippy:
     name: Clippy
@@ -43,7 +43,7 @@ jobs:
         with:
           components: clippy
 
-      - run: cargo clippy --no-deps --all-features --all-targets -- -D warnings -D clippy::expect_used -D clippy::unwrap_used -D clippy::unimplemented
+      - run: cargo clippy --manifest-path=clarity/Cargo.toml --no-deps --all-features --all-targets -- -D warnings -D clippy::expect_used -D clippy::unwrap_used -D clippy::unimplemented
 
   # Create tests and code coverage archives using llvm-cov.
   build-test-artifacts:
@@ -70,6 +70,7 @@ jobs:
       - name: Create archive of test binaries
         run: |
           cargo llvm-cov nextest-archive \
+            --manifest-path=clarity/Cargo.toml \
             --features test-clarity-v${{ matrix.clarity_version }} \
             --workspace \
             --archive-file nextest-archive-v${{ matrix.clarity_version }}.tar.zst
@@ -85,7 +86,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: standard-v${{ matrix.clarity_version }}.wasm
-          path: ${{github.workspace}}/clar2wasm/src/standard/standard.wasm
+          path: ${{github.workspace}}/clarity/src/vm/wasm/standard/standard.wasm
           if-no-files-found: error
 
   # Run the tests and generates coverage reports
@@ -115,7 +116,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: standard-v${{ matrix.clarity_version }}.wasm
-          path: ${{github.workspace}}/clar2wasm/src/standard/
+          path: ${{github.workspace}}/clarity/src/vm/wasm/standard/
 
       - name: Download archive
         uses: actions/download-artifact@v4
@@ -126,6 +127,7 @@ jobs:
         shell: bash
         run: |
           cargo llvm-cov nextest \
+            --manifest-path=clarity/Cargo.toml \
             --archive-file nextest-archive-v${{ matrix.clarity_version }}.tar.zst \
             --codecov \
             --output-path codecov-v${{ matrix.clarity_version }}.json
@@ -180,5 +182,5 @@ jobs:
 
       - name: Compile boot-contracts
         run: |
-          cargo build --release
-          bash ./scripts/boot-contracts-compile.sh
+          cargo build --release --manifest-path=clarity/Cargo.toml
+          bash ./clarity/scripts/boot-contracts-compile.sh
