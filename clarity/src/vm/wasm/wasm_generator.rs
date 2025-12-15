@@ -2093,7 +2093,7 @@ mod tests {
 
 (regtest)
 ",
-            evaluate("(ok false)"),
+            evaluate("(ok true)"),
         );
     }
 

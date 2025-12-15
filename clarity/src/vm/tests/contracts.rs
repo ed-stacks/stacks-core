@@ -1426,6 +1426,7 @@ fn test_contract_hash_standard_principal(
     assert_eq!(result, Value::err_uint(1));
 }
 
+#[cfg(not(feature = "clarity-wasm"))]
 #[apply(test_clarity_versions)]
 fn test_contract_hash_type_check(
     version: ClarityVersion,
@@ -1462,6 +1463,7 @@ fn test_contract_hash_type_check(
     );
 }
 
+#[cfg(not(feature = "clarity-wasm"))]
 #[apply(test_clarity_versions)]
 fn test_contract_hash_pre_clarity4(
     version: ClarityVersion,

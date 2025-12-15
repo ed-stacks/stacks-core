@@ -64,7 +64,7 @@ walrus = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 
 [dev-dependencies]
-clarity = { path = ".", features = ["developer-mode"] }
+clarity = { path = ".", features = ["test-clarity-wasm"] }
 assert-json-diff = { workspace = true }
 assert_cmd = { workspace = true }
 assert_fs = { workspace = true }
@@ -117,6 +117,7 @@ pb = []
 # Test-specific features
 
 # Clarity version to test - default v2
+test-clarity-wasm = ["clarity-wasm"]
 test-clarity-v1 = []
 test-clarity-v2 = []
 test-clarity-v3 = []

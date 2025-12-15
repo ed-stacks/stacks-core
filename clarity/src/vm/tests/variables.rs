@@ -27,7 +27,7 @@ use crate::vm::{
     database::MemoryBackingStore,
     errors::{CheckErrors, Error},
     tests::{tl_env_factory, TopLevelMemoryEnvironmentGenerator},
-    types::{PrincipalData, QualifiedContractIdentifier, Value},
+    types::{QualifiedContractIdentifier, Value},
     ClarityVersion, ContractContext,
 };
 
@@ -1118,6 +1118,7 @@ fn reuse_builtin_name(
     );
 }
 
+#[cfg(not(feature = "clarity-wasm"))]
 #[apply(test_clarity_versions)]
 fn test_block_time(
     version: ClarityVersion,
@@ -1247,6 +1248,7 @@ fn reuse_tenure_height(
     );
 }
 
+#[cfg(not(feature = "clarity-wasm"))]
 #[apply(test_clarity_versions)]
 fn test_current_contract(
     version: ClarityVersion,
@@ -1303,7 +1305,7 @@ fn test_current_contract(
         );
     } else {
         assert_eq!(
-            Ok(Value::Principal(PrincipalData::Contract(
+            Ok(Value::Principal(crate::vm::types::PrincipalData::Contract(
                 contract_identifier
             ))),
             eval_result

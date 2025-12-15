@@ -20,7 +20,7 @@ mod debug_msg;
 pub mod duck_type;
 mod error_mapping;
 
-#[cfg(feature = "developer-mode")]
+#[cfg(feature = "test-clarity-wasm")]
 pub mod test_utils;
 
 use crate::types::StacksEpochId;
