@@ -413,7 +413,7 @@ impl ComplexWord for MapDelete {
 
 #[cfg(test)]
 mod tests {
-    use crate::vm::errors::{CheckErrors, Error};
+    use crate::vm::errors::{CheckErrorKind, VmExecutionError as Error};
     use crate::vm::wasm::tools::{crosscheck, crosscheck_expect_failure, evaluate};
     use crate::vm::Value;
 
@@ -567,7 +567,9 @@ mod tests {
         // and can correctly detect all argument inconsistencies.
         let snippet = "(define-map some-map int {x: int})
         (map-set some-map 21 {x: 21} {x: 21})";
-        let expected = Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(3, 4)));
+        let expected = Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+            3, 4,
+        )));
         crosscheck(snippet, expected);
     }
 
@@ -582,7 +584,9 @@ mod tests {
         let snippet = "
         (define-map some-map int {x: int})
         (map-insert some-map 21 {x: 21} {x: 21})";
-        let expected = Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(3, 4)));
+        let expected = Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+            3, 4,
+        )));
         crosscheck(snippet, expected);
     }
 
@@ -598,7 +602,9 @@ mod tests {
         (define-map some-map int {x: int})
         (map-insert some-map 21 {x: 21})
         (map-delete some-map 21 21)";
-        let expected = Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(2, 3)));
+        let expected = Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+            2, 3,
+        )));
         crosscheck(snippet, expected);
     }
 }

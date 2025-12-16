@@ -223,9 +223,6 @@ stx-genesis = { path = "stx-genesis"}
 stacks = { package = "stackslib", path = "stackslib" }
 libsigner = { path = "libsigner" }
 stacks-signer = { path = "stacks-signer" }
-
-[patch.'https://github.com/stacks-network/clarity-wasm.git']
-clar2wasm = { package = "clar2wasm", path = "../clar2wasm/." }
 ```
 
 Note that these patch configurations should not be checked into the repositories, because we want the default behavior to be to use the git repo paths.

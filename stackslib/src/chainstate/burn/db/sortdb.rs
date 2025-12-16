@@ -1250,7 +1250,9 @@ impl<'a> SortitionHandleTx<'a> {
         key_vtxindex: u32,
         tip: &SortitionId,
     ) -> Result<Option<LeaderKeyRegisterOp>, db_error> {
-        assert!(key_block_height < BLOCK_HEIGHT_MAX);
+        if key_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let ancestor_snapshot =
             match SortitionDB::get_ancestor_snapshot_tx(self, key_block_height, tip)? {
                 Some(sn) => sn,
@@ -1318,7 +1320,9 @@ impl<'a> SortitionHandleTx<'a> {
         &mut self,
         block_height: u64,
     ) -> Result<Option<ConsensusHash>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let chain_tip = self.context.chain_tip.clone();
 
         match SortitionDB::get_ancestor_snapshot_tx(self, block_height, &chain_tip)? {
@@ -1345,7 +1349,9 @@ impl<'a> SortitionHandleTx<'a> {
         &mut self,
         burn_block_height: u64,
     ) -> Result<BlockSnapshot, db_error> {
-        assert!(burn_block_height < BLOCK_HEIGHT_MAX);
+        if burn_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         test_debug!(
             "Get snapshot at from sortition tip {}, expect height {}",
             &self.context.chain_tip,
@@ -1392,7 +1398,9 @@ impl<'a> SortitionHandleTx<'a> {
         &mut self,
         leader_key: &LeaderKeyRegisterOp,
     ) -> Result<bool, db_error> {
-        assert!(leader_key.block_height < BLOCK_HEIGHT_MAX);
+        if leader_key.block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let chain_tip = self.context.chain_tip.clone();
 
         let key_status =
@@ -1425,7 +1433,9 @@ impl<'a> SortitionHandleTx<'a> {
         vtxindex: u32,
         tip: &SortitionId,
     ) -> Result<Option<LeaderBlockCommitOp>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let ancestor_id = match get_ancestor_sort_id_tx(self, block_height, tip)? {
             Some(id) => id,
             None => {
@@ -1520,7 +1530,9 @@ impl SortitionHandle for SortitionHandleTx<'_> {
         &mut self,
         block_height: u64,
     ) -> Result<Option<BlockSnapshot>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let chain_tip = self.context.chain_tip.clone();
         SortitionDB::get_ancestor_snapshot_tx(self, block_height, &chain_tip)
     }
@@ -2119,7 +2131,9 @@ impl<'a> SortitionHandleConn<'a> {
     /// Returns None if the block height or block hash does not correspond to a
     /// known snapshot.
     pub fn get_consensus_at(&self, block_height: u64) -> Result<Option<ConsensusHash>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         match SortitionDB::get_ancestor_snapshot(self, block_height, &self.context.chain_tip)? {
             Some(sn) => Ok(Some(sn.consensus_hash)),
@@ -2131,7 +2145,9 @@ impl<'a> SortitionHandleConn<'a> {
         &self,
         block_height: u64,
     ) -> Result<Option<BlockSnapshot>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         // Note: This would return None if `block_height` were the height of `chain_tip`.
         SortitionDB::get_ancestor_snapshot(self, block_height, &self.context.chain_tip)
@@ -2203,7 +2219,9 @@ impl<'a> SortitionHandleConn<'a> {
         &self,
         burn_block_height: u64,
     ) -> Result<BlockSnapshot, db_error> {
-        assert!(burn_block_height < BLOCK_HEIGHT_MAX);
+        if burn_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         test_debug!(
             "Get snapshot at from sortition tip {}, expect height {}",
             &self.context.chain_tip,
@@ -2867,6 +2885,33 @@ impl SortitionDB {
         Ok(())
     }
 
+    fn replace_epochs(db_tx: &Transaction, epochs: &[StacksEpoch]) -> Result<(), db_error> {
+        info!("Replace existing epochs with new epochs");
+        db_tx.execute("DELETE FROM epochs;", NO_PARAMS)?;
+        for epoch in epochs.into_iter() {
+            let args = params![
+                (epoch.epoch_id as u32),
+                u64_to_sql(epoch.start_height)?,
+                u64_to_sql(epoch.end_height)?,
+                epoch.block_limit,
+                epoch.network_epoch,
+            ];
+            db_tx.execute(
+                "INSERT INTO epochs (epoch_id,start_block_height,end_block_height,block_limit,network_epoch) VALUES (?1,?2,?3,?4,?5)",
+                args
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn replace_epochs_unchecked(
+        db_tx: &Transaction,
+        epochs: &[StacksEpoch],
+    ) -> Result<(), db_error> {
+        Self::replace_epochs(db_tx, epochs)
+    }
+
     /// Validates given StacksEpochs (will runtime panic if there is any invalid StacksEpoch structuring) and
     /// replaces them into the SortitionDB's epochs table
     #[allow(clippy::indexing_slicing)] // bad epoch definitions panic
@@ -2924,22 +2969,7 @@ impl SortitionDB {
             panic!("FATAL: tip has reached or passed the end of the configured epoch");
         }
 
-        info!("Replace existing epochs with new epochs");
-        db_tx.execute("DELETE FROM epochs;", NO_PARAMS)?;
-        for epoch in epochs.into_iter() {
-            let args = params![
-                (epoch.epoch_id as u32),
-                u64_to_sql(epoch.start_height)?,
-                u64_to_sql(epoch.end_height)?,
-                epoch.block_limit,
-                epoch.network_epoch,
-            ];
-            db_tx.execute(
-                "INSERT INTO epochs (epoch_id,start_block_height,end_block_height,block_limit,network_epoch) VALUES (?1,?2,?3,?4,?5)",
-                args
-            )?;
-        }
-        Ok(())
+        Self::replace_epochs(db_tx, epochs)
     }
 
     /// Get a block commit by its content-addressed location in a specific sortition.
@@ -4943,7 +4973,9 @@ impl SortitionDB {
         ancestor_block_height: u64,
         tip_block_hash: &SortitionId,
     ) -> Result<Option<BlockSnapshot>, db_error> {
-        assert!(ancestor_block_height < BLOCK_HEIGHT_MAX);
+        if ancestor_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         let ancestor = match get_ancestor_sort_id(ic, ancestor_block_height, tip_block_hash)? {
             Some(id) => id,
@@ -4966,7 +4998,9 @@ impl SortitionDB {
         ancestor_block_height: u64,
         tip_block_hash: &SortitionId,
     ) -> Result<Option<BlockSnapshot>, db_error> {
-        assert!(ancestor_block_height < BLOCK_HEIGHT_MAX);
+        if ancestor_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         let ancestor = match get_ancestor_sort_id_tx(ic, ancestor_block_height, tip_block_hash)? {
             Some(id) => id,
@@ -4990,7 +5024,9 @@ impl SortitionDB {
         vtxindex: u32,
         tip: &SortitionId,
     ) -> Result<Option<LeaderBlockCommitOp>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let ancestor_id = match get_ancestor_sort_id(ic, block_height, tip)? {
             Some(id) => id,
             None => {
@@ -5007,7 +5043,9 @@ impl SortitionDB {
         block_height: u64,
         vtxindex: u32,
     ) -> Result<Option<LeaderBlockCommitOp>, db_error> {
-        assert!(block_height < BLOCK_HEIGHT_MAX);
+        if block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         let qry = "SELECT * FROM block_commits WHERE sortition_id = ?1 AND block_height = ?2 AND vtxindex = ?3 LIMIT 2";
         let args = params![sortition, u64_to_sql(block_height)?, vtxindex];
@@ -5029,7 +5067,9 @@ impl SortitionDB {
         key_vtxindex: u32,
         tip: &SortitionId,
     ) -> Result<Option<LeaderKeyRegisterOp>, db_error> {
-        assert!(key_block_height < BLOCK_HEIGHT_MAX);
+        if key_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         let ancestor_snapshot = match SortitionDB::get_ancestor_snapshot(ic, key_block_height, tip)?
         {
             Some(sn) => sn,
@@ -5215,7 +5255,9 @@ impl SortitionDB {
         burn_block_height: u64,
         chain_tip: &SortitionId,
     ) -> Result<BlockSnapshot, db_error> {
-        assert!(burn_block_height < BLOCK_HEIGHT_MAX);
+        if burn_block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
         test_debug!(
             "Get snapshot at from sortition tip {}, expect height {}",
             chain_tip,
@@ -5513,7 +5555,9 @@ impl SortitionHandleTx<'_> {
         leader_key: &LeaderKeyRegisterOp,
         sort_id: &SortitionId,
     ) -> Result<(), db_error> {
-        assert!(leader_key.block_height < BLOCK_HEIGHT_MAX);
+        if leader_key.block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         let args = params![
             leader_key.txid,
@@ -5621,7 +5665,9 @@ impl SortitionHandleTx<'_> {
         block_commit: &LeaderBlockCommitOp,
         sort_id: &SortitionId,
     ) -> Result<(), db_error> {
-        assert!(block_commit.block_height < BLOCK_HEIGHT_MAX);
+        if block_commit.block_height >= BLOCK_HEIGHT_MAX {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         // serialize tx input to JSON
         let tx_input_str =
@@ -5720,8 +5766,10 @@ impl SortitionHandleTx<'_> {
         snapshot: &BlockSnapshot,
         total_pox_payouts: (Vec<PoxAddress>, u128),
     ) -> Result<(), db_error> {
-        assert!(snapshot.block_height < BLOCK_HEIGHT_MAX);
-        assert!(snapshot.num_sortitions < BLOCK_HEIGHT_MAX);
+        if snapshot.block_height >= BLOCK_HEIGHT_MAX || snapshot.num_sortitions >= BLOCK_HEIGHT_MAX
+        {
+            return Err(db_error::BlockHeightOutOfRange);
+        }
 
         let pox_payouts_json = serde_json::to_string(&total_pox_payouts)
             .expect("FATAL: could not encode `total_pox_payouts` as JSON");

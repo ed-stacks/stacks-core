@@ -92,7 +92,7 @@ impl ComplexWord for ContractOf {
 
 #[cfg(test)]
 mod tests {
-    use crate::vm::errors::{Error, RuntimeErrorType};
+    use crate::vm::errors::{RuntimeError, VmExecutionError as Error};
     use crate::vm::types::{PrincipalData, QualifiedContractIdentifier};
     use crate::vm::wasm::tools::{crosscheck, evaluate, TestEnvironment};
     use crate::vm::Value;
@@ -102,7 +102,7 @@ mod tests {
         crosscheck(
             "(to-int u170141183460469231731687303715884105728)",
             Err(Error::Runtime(
-                RuntimeErrorType::ArithmeticOverflow,
+                RuntimeError::ArithmeticOverflow,
                 Some(Vec::new()),
             )),
         )
@@ -131,7 +131,7 @@ mod tests {
         crosscheck(
             "(to-uint -31)",
             Err(Error::Runtime(
-                RuntimeErrorType::ArithmeticUnderflow,
+                RuntimeError::ArithmeticUnderflow,
                 Some(Vec::new()),
             )),
         )
@@ -193,7 +193,7 @@ mod tests {
 (test-to-int-out-of-boundary)
     ",
             Err(Error::Runtime(
-                RuntimeErrorType::ArithmeticOverflow,
+                RuntimeError::ArithmeticOverflow,
                 Some(Vec::new()),
             )),
         );
@@ -208,7 +208,7 @@ mod tests {
 (test-to-uint-error)
     ",
             Err(Error::Runtime(
-                RuntimeErrorType::ArithmeticUnderflow,
+                RuntimeError::ArithmeticUnderflow,
                 Some(Vec::new()),
             )),
         );

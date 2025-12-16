@@ -4,10 +4,10 @@ use stacks_common::types::StacksEpochId;
 use walrus::{GlobalId, InstrSeqBuilder};
 use wasmtime::{AsContextMut, Linker, Memory, Module, Store, Val, ValType};
 
-use crate::vm::analysis::CheckErrors;
+use crate::vm::analysis::CheckErrorKind;
 use crate::vm::ast::build_ast;
 use crate::vm::contexts::GlobalContext;
-use crate::vm::errors::{Error, WasmError};
+use crate::vm::errors::{VmExecutionError as Error, WasmError};
 use crate::vm::types::signatures::CallableSubtype;
 use crate::vm::types::{
     ASCIIData, BuffData, BufferLength, CallableData, CharType, ListData, OptionalData,
@@ -149,7 +149,7 @@ pub fn wasm_to_clarity_value(
                         epoch,
                     )?;
                     Some(Value::some(value.ok_or(Error::Unchecked(
-                        CheckErrors::CouldNotDetermineType,
+                        CheckErrorKind::CouldNotDetermineType,
                     ))?)?)
                 } else {
                     Some(Value::none())
@@ -176,7 +176,7 @@ pub fn wasm_to_clarity_value(
                         epoch,
                     )?;
                     Some(Value::okay(ok.ok_or(Error::Unchecked(
-                        CheckErrors::CouldNotDetermineResponseOkType,
+                        CheckErrorKind::CouldNotDetermineType,
                     ))?)?)
                 } else {
                     let (err, _) = wasm_to_clarity_value(
@@ -188,7 +188,7 @@ pub fn wasm_to_clarity_value(
                         epoch,
                     )?;
                     Some(Value::error(err.ok_or(Error::Unchecked(
-                        CheckErrors::CouldNotDetermineResponseErrType,
+                        CheckErrorKind::CouldNotDetermineType,
                     ))?)?)
                 },
                 1 + ok_types.len() + err_types.len(),
@@ -321,10 +321,12 @@ pub fn wasm_to_clarity_value(
                 data_map.push((
                     name.clone(),
                     value.ok_or_else(|| {
-                        Error::Unchecked(CheckErrors::BadTupleConstruction(format!(
-                            "Failed to convert Wasm value into Clarity value for field `{}`",
-                            name
-                        )))
+                        Error::Unchecked(CheckErrorKind::NoSuchTupleField(
+                            format!(
+                            "Failed to convert Wasm value into Clarity value for field `{name}`",
+                        ),
+                            t.clone(),
+                        ))
                     })?,
                 ));
                 index += increment;
@@ -1268,7 +1270,7 @@ pub fn call_function<'a>(
     let func_types = context
         .contract_context()
         .lookup_function(function_name)
-        .ok_or(CheckErrors::UndefinedFunction(function_name.to_string()))?;
+        .ok_or(CheckErrorKind::UndefinedFunction(function_name.to_string()))?;
     let module = context
         .contract_context()
         .with_wasm_module(|wasm_module| unsafe {
@@ -1291,7 +1293,7 @@ pub fn call_function<'a>(
     // Call the specified function
     let func = instance
         .get_func(&mut store, function_name)
-        .ok_or(CheckErrors::UndefinedFunction(function_name.to_string()))?;
+        .ok_or(CheckErrorKind::UndefinedFunction(function_name.to_string()))?;
 
     // Access the global stack pointer from the instance
     let stack_pointer = instance
@@ -1715,7 +1717,7 @@ pub fn signature_from_string(
         epoch,
     )?
     .expressions;
-    let expr = expr.first().ok_or(CheckErrors::InvalidTypeDescription)?;
+    let expr = expr.first().ok_or(CheckErrorKind::InvalidTypeDescription)?;
     Ok(TypeSignature::parse_type_repr(
         StacksEpochId::latest(),
         expr,

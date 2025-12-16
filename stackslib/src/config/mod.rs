@@ -57,7 +57,10 @@ use crate::cost_estimates::fee_scalar::ScalarFeeRateEstimator;
 use crate::cost_estimates::metrics::{CostMetric, ProportionalDotProduct, UnitMetric};
 use crate::cost_estimates::{CostEstimator, FeeEstimator, PessimisticEstimator, UnitEstimator};
 use crate::net::atlas::AtlasConfig;
-use crate::net::connection::{ConnectionOptions, DEFAULT_BLOCK_PROPOSAL_MAX_AGE_SECS};
+use crate::net::connection::{
+    ConnectionOptions, DEFAULT_BLOCK_PROPOSAL_MAX_AGE_SECS,
+    DEFAULT_BLOCK_PROPOSAL_VALIDATION_TIMEOUT_SECS,
+};
 use crate::net::{Neighbor, NeighborAddress, NeighborKey};
 use crate::types::chainstate::BurnchainHeaderHash;
 use crate::types::EpochList;
@@ -123,11 +126,19 @@ const DEFAULT_TENURE_TIMEOUT_SECS: u64 = 180;
 /// Default percentage of block budget that must be used before attempting a
 /// time-based tenure extend
 const DEFAULT_TENURE_EXTEND_COST_THRESHOLD: u64 = 50;
+/// Default percentage of block budget that must be used before attempting a
+/// time-based read-count extend
+const DEFAULT_READ_COUNT_EXTEND_COST_THRESHOLD: u64 = 25;
 /// Default number of milliseconds that the miner should sleep between mining
 /// attempts when the mempool is empty.
 const DEFAULT_EMPTY_MEMPOOL_SLEEP_MS: u64 = 2_500;
+/// Default maximum execution time in seconds for a miner to process a transaction
+/// before timing out.
+const DEFAULT_MAX_EXECUTION_TIME_SECS: u64 = 30;
 /// Default number of seconds that a miner should wait before timing out an HTTP request to StackerDB.
 const DEFAULT_STACKERDB_TIMEOUT_SECS: u64 = 120;
+/// Default maximum size for a tenure (note: the counter is reset on tenure extend).
+pub const DEFAULT_MAX_TENURE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 
 static HELIUM_DEFAULT_CONNECTION_OPTIONS: LazyLock<ConnectionOptions> =
     LazyLock::new(|| ConnectionOptions {
@@ -576,33 +587,19 @@ impl Config {
 
     fn check_nakamoto_config(&self, burnchain: &Burnchain) {
         let epochs = self.burnchain.get_epoch_list();
-        let Some(epoch_30) = epochs.get(StacksEpochId::Epoch30) else {
-            // no Epoch 3.0, so just return
+        if epochs
+            .iter()
+            .all(|epoch| epoch.epoch_id < StacksEpochId::Epoch30)
+        {
             return;
-        };
+        }
         if burnchain.pox_constants.prepare_length < 3 {
             panic!(
                 "FATAL: Nakamoto rules require a prepare length >= 3. Prepare length set to {}",
                 burnchain.pox_constants.prepare_length
             );
         }
-        if burnchain.is_in_prepare_phase(epoch_30.start_height) {
-            panic!(
-                "FATAL: Epoch 3.0 must start *during* a reward phase, not a prepare phase. Epoch 3.0 start set to: {}. PoX Parameters: {:?}",
-                epoch_30.start_height,
-                &burnchain.pox_constants
-            );
-        }
-        let activation_reward_cycle = burnchain
-            .block_height_to_reward_cycle(epoch_30.start_height)
-            .expect("FATAL: Epoch 3.0 starts before the first burnchain block");
-        if activation_reward_cycle < 2 {
-            panic!(
-                "FATAL: Epoch 3.0 must start at or after the second reward cycle. Epoch 3.0 start set to: {}. PoX Parameters: {:?}",
-                epoch_30.start_height,
-                &burnchain.pox_constants
-            );
-        }
+        StacksEpoch::validate_nakamoto_transition_schedule(&epochs, burnchain);
     }
 
     /// Connect to the MempoolDB using the configured cost estimation
@@ -678,6 +675,7 @@ impl Config {
                 "FATAL: v1 unlock height is at a reward cycle boundary\nburnchain: {burnchain:?}"
             );
         }
+        StacksEpoch::validate_nakamoto_transition_schedule(epochs, burnchain);
     }
 
     // TODO: add tests from mutation testing results #4866
@@ -720,6 +718,8 @@ impl Config {
                 Ok(StacksEpochId::Epoch31)
             } else if epoch_name == EPOCH_CONFIG_3_2_0 {
                 Ok(StacksEpochId::Epoch32)
+            } else if epoch_name == EPOCH_CONFIG_3_3_0 {
+                Ok(StacksEpochId::Epoch33)
             } else {
                 Err(format!("Unknown epoch name specified: {epoch_name}"))
             }?;
@@ -748,6 +748,7 @@ impl Config {
             StacksEpochId::Epoch30,
             StacksEpochId::Epoch31,
             StacksEpochId::Epoch32,
+            StacksEpochId::Epoch33,
         ];
         for (expected_epoch, configured_epoch) in expected_list
             .iter()
@@ -1141,12 +1142,14 @@ impl Config {
                 tenure_cost_limit_per_block_percentage: miner_config
                     .tenure_cost_limit_per_block_percentage,
                 contract_cost_limit_percentage: miner_config.contract_cost_limit_percentage,
+                log_skipped_transactions: miner_config.log_skipped_transactions,
             },
             miner_status,
             confirm_microblocks: false,
             max_execution_time: miner_config
                 .max_execution_time_secs
                 .map(Duration::from_secs),
+            max_tenure_bytes: miner_config.max_tenure_bytes,
         }
     }
 
@@ -1188,12 +1191,14 @@ impl Config {
                 tenure_cost_limit_per_block_percentage: miner_config
                     .tenure_cost_limit_per_block_percentage,
                 contract_cost_limit_percentage: miner_config.contract_cost_limit_percentage,
+                log_skipped_transactions: miner_config.log_skipped_transactions,
             },
             miner_status,
             confirm_microblocks: true,
             max_execution_time: miner_config
                 .max_execution_time_secs
                 .map(Duration::from_secs),
+            max_tenure_bytes: miner_config.max_tenure_bytes,
         }
     }
 
@@ -1706,6 +1711,7 @@ pub const EPOCH_CONFIG_2_5_0: &str = "2.5";
 pub const EPOCH_CONFIG_3_0_0: &str = "3.0";
 pub const EPOCH_CONFIG_3_1_0: &str = "3.1";
 pub const EPOCH_CONFIG_3_2_0: &str = "3.2";
+pub const EPOCH_CONFIG_3_3_0: &str = "3.3";
 
 #[derive(Clone, Deserialize, Default, Debug)]
 #[serde(deny_unknown_fields)]
@@ -3000,6 +3006,21 @@ pub struct MinerConfig {
     /// @notes:
     ///   - Values: 0-100.
     pub tenure_extend_cost_threshold: u64,
+    /// Percentage of block budget that must be used before attempting a time-based tenure extend.
+    ///
+    /// This sets a minimum threshold for the accumulated execution cost within a
+    /// tenure before a time-based tenure extension ([`MinerConfig::tenure_timeout`])
+    /// can be initiated. The miner checks if the proportion of the total tenure
+    /// budget consumed so far exceeds this percentage. If the cost usage is below
+    /// this threshold, a time-based extension will not be attempted, even if the
+    /// [`MinerConfig::tenure_timeout`] duration has elapsed. This prevents miners
+    /// from extending tenures very early if they have produced only low-cost blocks.
+    /// ---
+    /// @default: [`DEFAULT_READ_COUNT_EXTEND_COST_THRESHOLD`]
+    /// @units: percent
+    /// @notes:
+    ///   - Values: 0-100.
+    pub read_count_extend_cost_threshold: u64,
     /// Defines adaptive timeouts for waiting for signer responses, based on the
     /// accumulated weight of rejections.
     ///
@@ -3040,7 +3061,7 @@ pub struct MinerConfig {
     /// transaction is skipped. This prevents potentially long-running or
     /// infinite-loop transactions from blocking block production.
     /// ---
-    /// @default: `None` (no execution time limit)
+    /// @default: Some([`DEFAULT_MAX_EXECUTION_TIME_SECS`])
     /// @units: seconds
     pub max_execution_time_secs: Option<u64>,
     /// TODO: remove this option when its no longer a testing feature and it becomes default behaviour
@@ -3051,6 +3072,18 @@ pub struct MinerConfig {
     /// @default: [`DEFAULT_STACKERDB_TIMEOUT_SECS`]
     /// @units: seconds.
     pub stackerdb_timeout: Duration,
+    /// Defines them maximum numnber of bytes to allow in a tenure.
+    /// The miner will stop mining if the limit is reached.
+    /// ---
+    /// @default: [`DEFAULT_MAX_TENURE_BYTES`]
+    /// @units: bytes.
+    pub max_tenure_bytes: u64,
+    /// Enable logging of skipped transactions (generally used for tests)
+    /// ---
+    /// @default: `false`
+    /// @notes:
+    ///   - Primarily intended for testing purposes.
+    pub log_skipped_transactions: bool,
 }
 
 impl Default for MinerConfig {
@@ -3094,6 +3127,7 @@ impl Default for MinerConfig {
             tenure_extend_wait_timeout: Duration::from_millis(DEFAULT_TENURE_EXTEND_WAIT_MS),
             tenure_timeout: Duration::from_secs(DEFAULT_TENURE_TIMEOUT_SECS),
             tenure_extend_cost_threshold: DEFAULT_TENURE_EXTEND_COST_THRESHOLD,
+            read_count_extend_cost_threshold: DEFAULT_READ_COUNT_EXTEND_COST_THRESHOLD,
 
             block_rejection_timeout_steps: {
                 let mut rejections_timeouts_default_map = HashMap::<u32, Duration>::new();
@@ -3103,9 +3137,11 @@ impl Default for MinerConfig {
                 rejections_timeouts_default_map.insert(30, Duration::from_secs(0));
                 rejections_timeouts_default_map
             },
-            max_execution_time_secs: None,
+            max_execution_time_secs: Some(DEFAULT_MAX_EXECUTION_TIME_SECS),
             replay_transactions: false,
             stackerdb_timeout: Duration::from_secs(DEFAULT_STACKERDB_TIMEOUT_SECS),
+            max_tenure_bytes: DEFAULT_MAX_TENURE_BYTES,
+            log_skipped_transactions: false,
         }
     }
 }
@@ -3601,6 +3637,17 @@ pub struct ConnectionOptionsFile {
     /// @default: 30
     /// @units: seconds
     pub read_only_max_execution_time_secs: Option<u64>,
+
+    /// Maximum time (in seconds) to spend validating a block when processing
+    /// a block proposal received via the `/v3/block_proposal` RPC endpoint.
+    ///
+    /// If a block takes longer than this timeout to validate, it will be aborted.
+    /// This prevents the node from getting stuck on slow validations when processing
+    /// a block proposal.
+    /// ---
+    /// @default: [`DEFAULT_BLOCK_PROPOSAL_VALIDATION_TIMEOUT_SECS`]
+    /// @units: seconds
+    pub block_proposal_validation_timeout_secs: Option<u64>,
 }
 
 impl ConnectionOptionsFile {
@@ -3755,6 +3802,9 @@ impl ConnectionOptionsFile {
             read_only_max_execution_time_secs: self
                 .read_only_max_execution_time_secs
                 .unwrap_or(default.read_only_max_execution_time_secs),
+            block_proposal_validation_timeout_secs: self
+                .block_proposal_validation_timeout_secs
+                .unwrap_or(DEFAULT_BLOCK_PROPOSAL_VALIDATION_TIMEOUT_SECS),
             ..default
         })
     }
@@ -4037,6 +4087,8 @@ pub struct MinerConfigFile {
     /// TODO: remove this config option once its no longer a testing feature
     pub replay_transactions: Option<bool>,
     pub stackerdb_timeout_secs: Option<u64>,
+    pub max_tenure_bytes: Option<u64>,
+    pub log_skipped_transactions: Option<bool>,
 }
 
 impl MinerConfigFile {
@@ -4229,6 +4281,9 @@ impl MinerConfigFile {
             max_execution_time_secs: self.max_execution_time_secs,
             replay_transactions: self.replay_transactions.unwrap_or_default(),
             stackerdb_timeout: self.stackerdb_timeout_secs.map(Duration::from_secs).unwrap_or(miner_default_config.stackerdb_timeout),
+            max_tenure_bytes: self.max_tenure_bytes.unwrap_or(miner_default_config.max_tenure_bytes),
+            log_skipped_transactions: self.log_skipped_transactions.unwrap_or(miner_default_config.log_skipped_transactions),
+            read_count_extend_cost_threshold: miner_default_config.read_count_extend_cost_threshold,
         })
     }
 }

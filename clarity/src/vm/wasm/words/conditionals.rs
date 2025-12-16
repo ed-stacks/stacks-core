@@ -17,7 +17,7 @@ use crate::vm::{ClarityName, SymbolicExpression};
 
 /// Handles Wasm values that can be short-returned in functions such as
 /// `try!`, `asserts!`, or `unwrap!`.
-enum ShortReturnable<'a> {
+enum EarlyReturnable<'a> {
     /// Inner value of a wasm optional
     Optional {
         inner_type: &'a TypeSignature,
@@ -37,7 +37,7 @@ enum ShortReturnable<'a> {
     },
 }
 
-impl<'a> ShortReturnable<'a> {
+impl<'a> EarlyReturnable<'a> {
     /// Creates a handler for an optional or a response that could be short-returned.
     ///
     /// Returns the local containing the variant of the optional or response.
@@ -83,9 +83,9 @@ impl<'a> ShortReturnable<'a> {
     /// Creates a handler for any value that could be short-returned.
     ///
     /// Takes as an argument the kind of [ErrorMap] that should be returned at short-return.
-    /// It should be one of [ErrorMap::ShortReturnAssertionFailure],
-    /// [ErrorMap::ShortReturnExpectedValue], [ErrorMap::ShortReturnExpectedValueResponse]
-    /// or [ErrorMap::ShortReturnExpectedValueOptional].
+    /// It should be one of [ErrorMap::EarlyReturnAssertionFailure],
+    /// [ErrorMap::EarlyReturnExpectedValue], [ErrorMap::EarlyReturnExpectedValueResponse]
+    /// or [ErrorMap::EarlyReturnExpectedValueOptional].
     fn new_any(
         generator: &mut WasmGenerator,
         builder: &mut InstrSeqBuilder,
@@ -107,13 +107,13 @@ impl<'a> ShortReturnable<'a> {
     /// - the whole value otherwise
     fn push_success_value(&self, builder: &mut InstrSeqBuilder) {
         match self {
-            ShortReturnable::Optional { value, .. } => value.iter().for_each(|&l| {
+            EarlyReturnable::Optional { value, .. } => value.iter().for_each(|&l| {
                 builder.local_get(l);
             }),
-            ShortReturnable::Response { ok_value, .. } => ok_value.iter().for_each(|&l| {
+            EarlyReturnable::Response { ok_value, .. } => ok_value.iter().for_each(|&l| {
                 builder.local_get(l);
             }),
-            ShortReturnable::Any { value, .. } => value.iter().for_each(|&l| {
+            EarlyReturnable::Any { value, .. } => value.iter().for_each(|&l| {
                 builder.local_get(l);
             }),
         }
@@ -123,7 +123,7 @@ impl<'a> ShortReturnable<'a> {
     ///
     /// Can fail if we don't have a response.
     fn push_err_value(&self, builder: &mut InstrSeqBuilder) -> Result<(), GeneratorError> {
-        if let ShortReturnable::Response { err_value, .. } = self {
+        if let EarlyReturnable::Response { err_value, .. } = self {
             err_value.iter().for_each(|&l| {
                 builder.local_get(l);
             });
@@ -133,7 +133,7 @@ impl<'a> ShortReturnable<'a> {
         }
     }
 
-    /// Generates the handling of a ShortReturn error.
+    /// Generates the handling of a EarlyReturn error.
     fn handle_short_return(
         &self,
         generator: &mut WasmGenerator,
@@ -148,9 +148,9 @@ impl<'a> ShortReturnable<'a> {
         }
     }
 
-    /// Generates the handling of a ShortReturn error when we are not in a function.
+    /// Generates the handling of a EarlyReturn error when we are not in a function.
     ///
-    /// This is part of [ShortReturnable::handle_short_return] and shouldn't be used directly.
+    /// This is part of [EarlyReturnable::handle_short_return] and shouldn't be used directly.
     fn handle_short_return_top_level(
         &self,
         generator: &mut WasmGenerator,
@@ -161,15 +161,15 @@ impl<'a> ShortReturnable<'a> {
             let mut sr = builder.dangling_instr_seq(None);
             match self {
                 // for an optional, nothing to do but short-return.
-                ShortReturnable::Optional { inner_type, .. } => {
+                EarlyReturnable::Optional { inner_type, .. } => {
                     generator.short_return_error(
                         &mut sr,
                         inner_type,
-                        ErrorMap::ShortReturnExpectedValueOptional,
+                        ErrorMap::EarlyReturnExpectedValueOptional,
                     )?;
                 }
                 // for a response, we need to push the value inside `err` to the stack then short-return.
-                ShortReturnable::Response {
+                EarlyReturnable::Response {
                     err_type,
                     err_value,
                     ..
@@ -180,11 +180,11 @@ impl<'a> ShortReturnable<'a> {
                     generator.short_return_error(
                         &mut sr,
                         err_type,
-                        ErrorMap::ShortReturnExpectedValueResponse,
+                        ErrorMap::EarlyReturnExpectedValueResponse,
                     )?;
                 }
                 // for any other value, we push it to the stack then short-return.
-                ShortReturnable::Any {
+                EarlyReturnable::Any {
                     ty,
                     value,
                     err_kind,
@@ -209,9 +209,9 @@ impl<'a> ShortReturnable<'a> {
         Ok(())
     }
 
-    /// Generates the handling of a ShortReturn error when we are in a function.
+    /// Generates the handling of a EarlyReturn error when we are in a function.
     ///
-    /// This is part of [ShortReturnable::handle_short_return] and shouldn't be used directly.
+    /// This is part of [EarlyReturnable::handle_short_return] and shouldn't be used directly.
     fn handle_short_return_function(
         &self,
         generator: &WasmGenerator,
@@ -221,7 +221,7 @@ impl<'a> ShortReturnable<'a> {
     ) -> Result<(), GeneratorError> {
         match self {
             // for an optional, we need to push the full value to the stack
-            ShortReturnable::Optional { inner_type, .. } => {
+            EarlyReturnable::Optional { inner_type, .. } => {
                 builder.i32_const(0);
                 add_placeholder_for_clarity_type(builder, inner_type);
             }
@@ -229,7 +229,7 @@ impl<'a> ShortReturnable<'a> {
             // - 0 for err
             // - a placeholder for the ok value with the type of the function return type
             // - the err value
-            ShortReturnable::Response { err_value, .. } => {
+            EarlyReturnable::Response { err_value, .. } => {
                 builder.i32_const(0);
                 let TypeSignature::ResponseType(expected_resp) = expected_type else {
                     return Err(GeneratorError::TypeError(format!(
@@ -827,18 +827,18 @@ impl ComplexWord for Unwrap {
 
         generator.traverse_expr(builder, input)?;
 
-        // we save the input as a short-returnable by convenience: we have accesse to [ShortReturnable::push_success_value]
+        // we save the input as a short-returnable by convenience: we have accesse to [EarlyReturnable::push_success_value]
         let (short_returnable_input, variant) =
-            ShortReturnable::new(generator, builder, &input_ty)?;
+            EarlyReturnable::new(generator, builder, &input_ty)?;
 
         generator.traverse_expr(builder, throw)?;
 
         // we save the thrown value as a short returnable and handle a short-return
-        let short_returnable_throw = ShortReturnable::new_any(
+        let short_returnable_throw = EarlyReturnable::new_any(
             generator,
             builder,
             &throw_ty,
-            ErrorMap::ShortReturnExpectedValue,
+            ErrorMap::EarlyReturnExpectedValue,
         );
 
         short_returnable_throw.handle_short_return(generator, builder, |instrs| {
@@ -913,18 +913,18 @@ impl ComplexWord for UnwrapErr {
 
         generator.traverse_expr(builder, input)?;
 
-        // we save the input as a short-returnable by convenience: we have accesse to [ShortReturnable::push_err_value]
+        // we save the input as a short-returnable by convenience: we have accesse to [EarlyReturnable::push_err_value]
         let (short_returnable_input, variant) =
-            ShortReturnable::new(generator, builder, &input_ty)?;
+            EarlyReturnable::new(generator, builder, &input_ty)?;
 
         generator.traverse_expr(builder, throw)?;
 
         // we save the thrown value as a short returnable and handle a short-return
-        let short_returnable_throw = ShortReturnable::new_any(
+        let short_returnable_throw = EarlyReturnable::new_any(
             generator,
             builder,
             &throw_ty,
-            ErrorMap::ShortReturnExpectedValue,
+            ErrorMap::EarlyReturnExpectedValue,
         );
 
         short_returnable_throw.handle_short_return(generator, builder, |instrs| {
@@ -978,11 +978,11 @@ impl ComplexWord for Asserts {
         generator.traverse_expr(builder, thrown)?;
 
         // we save the thrown as a short-returnable, and we handle its short-return.
-        let short_returnable_thrown = ShortReturnable::new_any(
+        let short_returnable_thrown = EarlyReturnable::new_any(
             generator,
             builder,
             &thrown_type,
-            ErrorMap::ShortReturnAssertionFailure,
+            ErrorMap::EarlyReturnAssertionFailure,
         );
 
         short_returnable_thrown.handle_short_return(generator, builder, |instrs| {
@@ -1027,7 +1027,7 @@ impl ComplexWord for Try {
 
         // we save the input as a short-returnable and handle the short-return
         let (short_returnable_value, variant) =
-            ShortReturnable::new(generator, builder, &input_ty)?;
+            EarlyReturnable::new(generator, builder, &input_ty)?;
 
         short_returnable_value.handle_short_return(generator, builder, |instrs| {
             // we need to short-return if the variant is `none` or `err`
@@ -1045,7 +1045,7 @@ impl ComplexWord for Try {
 mod tests {
     use clarity_types::types::OptionalData;
 
-    use crate::vm::errors::{Error, ShortReturnType};
+    use crate::vm::errors::{EarlyReturnError, VmExecutionError as Error};
     use crate::vm::types::ResponseData;
     use crate::vm::wasm::tools::{crosscheck, crosscheck_expect_failure, evaluate};
     use crate::vm::Value;
@@ -1613,7 +1613,7 @@ mod tests {
     fn asserts_top_level_false() {
         crosscheck(
             "(asserts! false (err u1))",
-            Err(Error::ShortReturn(ShortReturnType::AssertionFailed(
+            Err(Error::EarlyReturn(EarlyReturnError::AssertionFailed(
                 Box::new(Value::Response(ResponseData {
                     committed: false,
                     data: Box::new(Value::UInt(1)),
@@ -1646,7 +1646,7 @@ mod tests {
     fn try_response_false() {
         crosscheck(
             "(try! (if false (ok u1) (err u42)))",
-            Err(Error::ShortReturn(ShortReturnType::ExpectedValue(
+            Err(Error::EarlyReturn(EarlyReturnError::UnwrapFailed(
                 Box::new(Value::Response(ResponseData {
                     committed: false,
                     data: Box::new(Value::UInt(42)),
@@ -1659,7 +1659,7 @@ mod tests {
     fn try_optional_false() {
         crosscheck(
             "(try! (if false (some u1) none))",
-            Err(Error::ShortReturn(ShortReturnType::ExpectedValue(
+            Err(Error::EarlyReturn(EarlyReturnError::UnwrapFailed(
                 Box::new(Value::Optional(OptionalData { data: None })),
             ))),
         )

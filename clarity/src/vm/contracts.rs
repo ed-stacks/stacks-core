@@ -19,7 +19,7 @@ use stacks_common::types::StacksEpochId;
 use super::analysis::ContractAnalysis;
 use crate::vm::ast::ContractAST;
 use crate::vm::contexts::{ContractContext, GlobalContext};
-use crate::vm::errors::InterpreterResult as Result;
+use crate::vm::errors::VmExecutionError;
 use crate::vm::eval_all;
 use crate::vm::types::{PrincipalData, QualifiedContractIdentifier};
 use crate::vm::version::ClarityVersion;
@@ -41,7 +41,7 @@ impl Contract {
         sponsor: Option<PrincipalData>,
         global_context: &mut GlobalContext,
         version: ClarityVersion,
-    ) -> Result<Contract> {
+    ) -> Result<Contract, VmExecutionError> {
         let mut contract_context = ContractContext::new(contract_identifier, version);
 
         #[cfg(feature = "clarity-wasm")]

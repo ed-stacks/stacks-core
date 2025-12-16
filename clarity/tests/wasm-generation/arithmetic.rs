@@ -1,4 +1,4 @@
-use clarity::vm::errors::{Error, RuntimeErrorType};
+use clarity::vm::errors::{RuntimeError, VmExecutionError as Error};
 use clarity::vm::wasm::tools::{
     crosscheck_compare_only, crosscheck_compare_only_with_expected_error,
 };
@@ -18,7 +18,7 @@ proptest! {
         for op in &ONE_VALUE_OPS {
             crosscheck_compare_only_with_expected_error(
                 &format!("({op} {v1})"),
-                |e| matches!(e, Error::Runtime(RuntimeErrorType::Arithmetic(_), _))
+                |e| matches!(e, Error::Runtime(RuntimeError::Arithmetic(_), _))
             )
         }
     }
@@ -47,7 +47,7 @@ proptest! {
                 &format!("({op} {v1} {v2})"),
                 |e| matches!(e,
                     Error::Runtime(
-                        RuntimeErrorType::ArithmeticOverflow | RuntimeErrorType::Arithmetic(_),
+                        RuntimeError::ArithmeticOverflow | RuntimeError::Arithmetic(_),
                         _)))
         }
     }
@@ -63,8 +63,8 @@ proptest! {
                 &format!("({op} {v1} {v2})"),
                 |e| matches!(e,
                     Error::Runtime(
-                        RuntimeErrorType::ArithmeticOverflow |
-                        RuntimeErrorType::Arithmetic(_),
+                        RuntimeError::ArithmeticOverflow |
+                        RuntimeError::Arithmetic(_),
                         _)))
         }
     }
@@ -80,8 +80,8 @@ proptest! {
             crosscheck_compare_only_with_expected_error(
                 &format!("({op} {values_str})"),
                 |e| matches!(e, Error::Runtime(
-                    RuntimeErrorType::ArithmeticOverflow |
-                    RuntimeErrorType::ArithmeticUnderflow, _))
+                    RuntimeError::ArithmeticOverflow |
+                    RuntimeError::ArithmeticUnderflow, _))
             )
         }
     }
@@ -96,8 +96,8 @@ proptest! {
             crosscheck_compare_only_with_expected_error(
                 &format!("({op} {v1} {v2})"),
                 |e| matches!(e, Error::Runtime(
-                    RuntimeErrorType::ArithmeticOverflow |
-                    RuntimeErrorType::ArithmeticUnderflow, _))
+                    RuntimeError::ArithmeticOverflow |
+                    RuntimeError::ArithmeticUnderflow, _))
             )
         }
     }

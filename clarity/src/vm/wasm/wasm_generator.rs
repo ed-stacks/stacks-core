@@ -691,9 +691,9 @@ impl WasmGenerator {
         runtime_error: ErrorMap,
     ) -> Result<(), GeneratorError> {
         match runtime_error {
-            ErrorMap::ShortReturnAssertionFailure
-            | ErrorMap::ShortReturnExpectedValue
-            | ErrorMap::ShortReturnExpectedValueResponse => {
+            ErrorMap::EarlyReturnAssertionFailure
+            | ErrorMap::EarlyReturnExpectedValue
+            | ErrorMap::EarlyReturnExpectedValueResponse => {
                 let (val_offset, _) = self.create_call_stack_local(builder, ty, false, true);
                 self.write_to_memory(builder, val_offset, 0, ty)?;
 
@@ -725,7 +725,7 @@ impl WasmGenerator {
                     .i32_const(runtime_error as i32)
                     .call(self.func_by_name("stdlib.runtime-error"));
             }
-            ErrorMap::ShortReturnExpectedValueOptional => {
+            ErrorMap::EarlyReturnExpectedValueOptional => {
                 // Simple case: just call runtime error
                 builder
                     .i32_const(runtime_error as i32)
@@ -2072,7 +2072,7 @@ mod tests {
     use crate::vm::analysis::AnalysisDatabase;
     use crate::vm::costs::LimitedCostTracker;
     use crate::vm::database::MemoryBackingStore;
-    use crate::vm::errors::{CheckErrors, Error};
+    use crate::vm::errors::{CheckErrorKind, VmExecutionError as Error};
     use crate::vm::types::{QualifiedContractIdentifier, StandardPrincipalData, TupleData};
     use crate::vm::{ClarityVersion, Value};
     use walrus::Module;
@@ -2236,7 +2236,9 @@ mod tests {
   (ok true))
 (bar)
 ",
-            Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(1, 2))),
+            Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+                1, 2,
+            ))),
         );
     }
 

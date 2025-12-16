@@ -188,13 +188,28 @@ impl GlobalStateView {
             }
         }
 
-        if let Some(tenure_extend) = block.get_tenure_extend_tx_payload() {
-            // in tenure extends, we need to check:
+        // is there an unsupported tenure extend type?
+        if let Some(tenure_extend) = block.get_tenure_extend_tx_payload().filter(|extend| {
+            !(extend.cause.is_full_extend() || extend.cause.is_read_count_extend())
+        }) {
+            warn!(
+                "Miner block proposal contains a tenure extend with an unsupported cause";
+                "tenure_extend_cause" => %tenure_extend.cause,
+            );
+            return Err(RejectReason::InvalidTenureExtend);
+        }
+
+        // is there a full tenure extend in this block?
+        if let Some(tenure_extend) = block
+            .get_tenure_extend_tx_payload()
+            .filter(|extend| extend.cause.is_full_extend())
+        {
+            // in full tenure extends, we need to check:
             // (1) if this is the most recent sortition, an extend is allowed if it changes the burnchain view
             // (2) if this is the most recent sortition, an extend is allowed if enough time has passed to refresh the block limit
             // (3) if we are in replay, an extend is allowed
             let changed_burn_view = &tenure_extend.burn_view_consensus_hash != tenure_id;
-            let extend_timestamp = signer_db.calculate_tenure_extend_timestamp(
+            let extend_timestamp = signer_db.calculate_full_extend_timestamp(
                 self.config.tenure_idle_timeout,
                 block,
                 false,
@@ -205,6 +220,45 @@ impl GlobalStateView {
             if !changed_burn_view && !enough_time_passed && !is_in_replay {
                 warn!(
                     "Miner block proposal contains a tenure extend, but the conditions for allowing a tenure extend are not met. Considering proposal invalid.";
+                    "proposed_block_consensus_hash" => %block.header.consensus_hash,
+                    "signer_signature_hash" => %block.header.signer_signature_hash(),
+                    "extend_timestamp" => extend_timestamp,
+                    "epoch_time" => epoch_time,
+                    "is_in_replay" => is_in_replay,
+                    "changed_burn_view" => changed_burn_view,
+                    "enough_time_passed" => enough_time_passed,
+                );
+                return Err(RejectReason::InvalidTenureExtend);
+            }
+        }
+
+        // is there a read-count tenure extend in this block?
+        if let Some(tenure_extend) = block
+            .get_tenure_extend_tx_payload()
+            .filter(|extend| extend.cause.is_read_count_extend())
+        {
+            // burn view changes are not allowed during read-count tenure extends
+            let changed_burn_view = &tenure_extend.burn_view_consensus_hash != tenure_id;
+            if changed_burn_view {
+                warn!(
+                    "Miner block proposal contains a read-count extend, but the conditions for allowing a tenure extend are not met. Considering proposal invalid.";
+                    "proposed_block_consensus_hash" => %block.header.consensus_hash,
+                    "signer_signature_hash" => %block.header.signer_signature_hash(),
+                    "changed_burn_view" => changed_burn_view,
+                );
+                return Err(RejectReason::InvalidTenureExtend);
+            }
+            let extend_timestamp = signer_db.calculate_read_count_extend_timestamp(
+                self.config.read_count_idle_timeout,
+                block,
+                false,
+            );
+            let epoch_time = get_epoch_time_secs();
+            let enough_time_passed = epoch_time >= extend_timestamp;
+            let is_in_replay = self.signer_state.tx_replay_set.is_some();
+            if !enough_time_passed && !is_in_replay {
+                warn!(
+                    "Miner block proposal contains a read-count extend, but the conditions for allowing a tenure extend are not met. Considering proposal invalid.";
                     "proposed_block_consensus_hash" => %block.header.consensus_hash,
                     "signer_signature_hash" => %block.header.signer_signature_hash(),
                     "extend_timestamp" => extend_timestamp,

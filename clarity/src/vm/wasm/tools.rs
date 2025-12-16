@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use clarity_types::errors::StaticCheckErrorKind;
 use clarity_types::types::TypeSignature;
 use regex::Regex;
 
@@ -18,7 +19,7 @@ use crate::vm::contexts::{EventBatch, GlobalContext};
 use crate::vm::contracts::Contract;
 use crate::vm::costs::{CostTracker, ExecutionCost, LimitedCostTracker};
 use crate::vm::database::ClarityDatabase;
-use crate::vm::errors::{CheckErrors, Error, WasmError};
+use crate::vm::errors::{VmExecutionError as Error, WasmError};
 use crate::vm::events::{SmartContractEventData, StacksTransactionEvent};
 use crate::vm::types::{PrincipalData, QualifiedContractIdentifier, StandardPrincipalData};
 use crate::vm::wasm::compile;
@@ -259,7 +260,7 @@ impl TestEnvironment {
                     analysis_db,
                     !is_boot_contract && self.emit_cost_code,
                 )
-                .map_err(|e| CheckErrors::Expects(format!("Compilation failure {e:?}")))
+                .map_err(|e| StaticCheckErrorKind::Expects(format!("Compilation failure {e:?}")))
             })
             .map_err(|e| Error::Wasm(WasmError::WasmGeneratorError(format!("{e:?}"))))?;
 
@@ -352,32 +353,36 @@ impl TestEnvironment {
             (*contract_name).into(),
         );
 
-        let contract_analysis = self.datastore.as_analysis_db().execute(|analysis_db| {
-            let mut cost_tracker = LimitedCostTracker::new_free();
+        let contract_analysis = self
+            .datastore
+            .as_analysis_db()
+            .execute(|analysis_db| {
+                let mut cost_tracker = LimitedCostTracker::new_free();
 
-            // Parse the contract
-            let ast = build_ast(
-                &contract_id,
-                snippet,
-                &mut cost_tracker,
-                self.version,
-                self.epoch,
-            )
-            .map_err(|e| Error::Wasm(WasmError::WasmGeneratorError(format!("{e:?}"))))?;
+                // Parse the contract
+                let ast = build_ast(
+                    &contract_id,
+                    snippet,
+                    &mut cost_tracker,
+                    self.version,
+                    self.epoch,
+                )
+                .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")))?;
 
-            // Run the analysis passes
-            run_analysis(
-                &contract_id,
-                &ast.expressions,
-                analysis_db,
-                false,
-                cost_tracker,
-                self.epoch,
-                self.version,
-                true,
-            )
-            .map_err(|boxed| Error::Wasm(WasmError::WasmGeneratorError(format!("{:?}", boxed.0))))
-        })?;
+                // Run the analysis passes
+                run_analysis(
+                    &contract_id,
+                    &ast.expressions,
+                    analysis_db,
+                    false,
+                    cost_tracker,
+                    self.epoch,
+                    self.version,
+                    true,
+                )
+                .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")))
+            })
+            .map_err(|err| Error::Wasm(WasmError::WasmGeneratorError(format!("{err}"))))?;
 
         self.datastore
             .as_analysis_db()
@@ -1051,7 +1056,7 @@ fn as_oom_check_snippet(
                 analysis_db,
                 false,
             )
-            .map_err(|e| CheckErrors::Expects(format!("Compilation failure {e:?}")))
+            .map_err(|e| StaticCheckErrorKind::Expects(format!("Compilation failure {e:?}")))
         })
         .expect("Could not compile snippet")
         .module;

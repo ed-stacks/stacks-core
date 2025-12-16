@@ -62,8 +62,8 @@ mod clarity_v2_v3 {
             let skippable = tuple2.0.expect_tuple().unwrap();
 
             let merged_tuple = TupleData::shallow_merge(deserializable, skippable);
-            prop_assume!(merged_tuple.is_ok(), "Cannot create a correct merged tuple");
-            let merged_tuple = PropValue::from(Value::from(merged_tuple.unwrap()));
+            // prop_assume!(merged_tuple.is_ok(), "Cannot create a correct merged tuple");
+            let merged_tuple = PropValue::from(Value::from(merged_tuple));
 
             let mut data = Vec::new();
             prop_assume!(

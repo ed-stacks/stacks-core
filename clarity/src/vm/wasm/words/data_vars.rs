@@ -247,7 +247,7 @@ impl ComplexWord for GetDataVar {
 
 #[cfg(test)]
 mod tests {
-    use crate::vm::errors::{CheckErrors, Error};
+    use crate::vm::errors::{CheckErrorKind, VmExecutionError as Error};
     use crate::vm::wasm::tools::{
         crosscheck, crosscheck_expect_failure, crosscheck_with_clarity_version, evaluate,
     };
@@ -311,7 +311,9 @@ mod tests {
         // This test should be re-worked once the typechecker is fixed
         // and can correctly detect all argument inconsistencies.
         let snippet = "(define-data-var something int 1) (var-set something 1 2)";
-        let expected = Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(2, 3)));
+        let expected = Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+            2, 3,
+        )));
         crosscheck(snippet, expected);
     }
 

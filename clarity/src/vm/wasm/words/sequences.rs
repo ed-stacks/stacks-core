@@ -2552,8 +2552,7 @@ mod tests {
     #[cfg(not(feature = "test-clarity-v1"))]
     #[cfg(test)]
     mod clarity_v2_v3 {
-        use crate::vm::errors::RuntimeErrorType;
-        use clarity_types::Error;
+        use crate::vm::errors::{RuntimeError, VmExecutionError as Error};
 
         use super::*;
 
@@ -2677,7 +2676,7 @@ mod tests {
             crosscheck(
                 snippet,
                 Err(Error::Runtime(
-                    RuntimeErrorType::BadTypeConstruction,
+                    RuntimeError::BadTypeConstruction,
                     Some(Vec::new()),
                 )),
             )
@@ -2690,7 +2689,7 @@ mod tests {
             crosscheck(
                 snippet,
                 Err(Error::Runtime(
-                    RuntimeErrorType::BadTypeConstruction,
+                    RuntimeError::BadTypeConstruction,
                     Some(Vec::new()),
                 )),
             )
@@ -2703,7 +2702,7 @@ mod tests {
             crosscheck(
                 snippet,
                 Err(Error::Runtime(
-                    RuntimeErrorType::BadTypeConstruction,
+                    RuntimeError::BadTypeConstruction,
                     Some(Vec::new()),
                 )),
             )

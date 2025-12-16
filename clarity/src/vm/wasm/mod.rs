@@ -111,7 +111,7 @@ pub fn compile(
     // might contain `ListUnionType` or `CallableType`
     #[allow(clippy::expect_used)]
     if let Err(e) = utils::concretize(&mut contract_analysis) {
-        diagnostics.push(e.diagnostic);
+        diagnostics.push(Diagnostic::err(&e));
         return Err(CompileError::Generic {
             ast: Box::new(ast),
             diagnostics: diagnostics.clone(),
@@ -160,12 +160,13 @@ pub fn compile_contract(contract_analysis: ContractAnalysis) -> Result<Module, G
 }
 
 mod utils {
-    use crate::vm::analysis::{CheckError, ContractAnalysis};
-    use crate::vm::errors::CheckErrors;
+    use crate::vm::analysis::{ContractAnalysis, StaticCheckErrorKind};
     use crate::vm::types::signatures::FunctionReturnsSignature;
     use crate::vm::types::{FixedFunction, FunctionType};
 
-    pub fn concretize(contract_analysis: &mut ContractAnalysis) -> Result<(), CheckError> {
+    pub fn concretize(
+        contract_analysis: &mut ContractAnalysis,
+    ) -> Result<(), StaticCheckErrorKind> {
         // concretize Values types
         if let Some(mut typemap) = contract_analysis.type_map.take() {
             typemap.concretize()?;
@@ -195,7 +196,9 @@ mod utils {
         Ok(())
     }
 
-    fn concretize_function_return_type(ft: FunctionType) -> Result<FunctionType, CheckErrors> {
+    fn concretize_function_return_type(
+        ft: FunctionType,
+    ) -> Result<FunctionType, StaticCheckErrorKind> {
         match ft {
             FunctionType::Variadic(args, return_type) => {
                 Ok(FunctionType::Variadic(args, return_type.concretize_deep()?))

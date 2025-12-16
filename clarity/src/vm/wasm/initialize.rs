@@ -3,7 +3,7 @@ use wasmtime::{Linker, Module, Store};
 
 use crate::vm::analysis::ContractAnalysis;
 use crate::vm::contexts::GlobalContext;
-use crate::vm::errors::{Error, RuntimeErrorType, WasmError};
+use crate::vm::errors::{RuntimeError, VmExecutionError as Error, WasmError};
 use crate::vm::events::*;
 use crate::vm::types::{AssetIdentifier, BuffData, PrincipalData, QualifiedContractIdentifier};
 use crate::vm::wasm::cost::{CostLinker, CostMeter};
@@ -93,7 +93,7 @@ impl<'a, 'b> ClarityWasmContext<'a, 'b> {
     pub fn pop_sender(&mut self) -> Result<PrincipalData, Error> {
         self.sender
             .take()
-            .ok_or(RuntimeErrorType::NoSenderInContext.into())
+            .ok_or(RuntimeError::NoSenderInContext.into())
             .inspect(|_| {
                 self.sender = self.sender_stack.pop();
             })
@@ -109,7 +109,7 @@ impl<'a, 'b> ClarityWasmContext<'a, 'b> {
     pub fn pop_caller(&mut self) -> Result<PrincipalData, Error> {
         self.caller
             .take()
-            .ok_or(RuntimeErrorType::NoCallerInContext.into())
+            .ok_or(RuntimeError::NoCallerInContext.into())
             .inspect(|_| {
                 self.caller = self.caller_stack.pop();
             })
@@ -149,7 +149,7 @@ impl<'a, 'b> ClarityWasmContext<'a, 'b> {
 
     pub fn push_to_event_batch(&mut self, event: StacksTransactionEvent) {
         if let Some(batch) = self.global_context.event_batches.last_mut() {
-            batch.events.push(event);
+            batch.0.events.push(event);
         }
     }
 

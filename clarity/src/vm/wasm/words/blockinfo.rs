@@ -363,7 +363,7 @@ impl ComplexWord for GetTenureInfo {
 #[cfg(test)]
 mod tests {
     use crate::types::StacksEpochId;
-    use crate::vm::errors::{CheckErrors, Error};
+    use crate::vm::errors::{CheckErrorKind, VmExecutionError as Error};
     use crate::vm::types::{OptionalData, PrincipalData, TupleData};
     use crate::vm::wasm::tools::{evaluate, TestEnvironment};
     use crate::vm::{ClarityVersion, Value};
@@ -449,7 +449,9 @@ mod tests {
             // This test should be re-worked once the typechecker is fixed
             // and can correctly detect all argument inconsistencies.
             let snippet = "(get-block-info? burnchain-header-hash u0 miner-address)";
-            let expected = Err(Error::Unchecked(CheckErrors::IncorrectArgumentCount(2, 3)));
+            let expected = Err(Error::Unchecked(CheckErrorKind::IncorrectArgumentCount(
+                2, 3,
+            )));
             crosscheck_with_epoch(snippet, expected, StacksEpochId::Epoch24);
         }
     }
@@ -894,7 +896,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             e,
-            Error::Unchecked(CheckErrors::NoSuchDataVariable("data".into()))
+            Error::Unchecked(CheckErrorKind::NoSuchDataVariable("data".into()))
         );
     }
 

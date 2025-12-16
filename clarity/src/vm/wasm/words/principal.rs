@@ -339,7 +339,7 @@ impl ComplexWord for PrincipalOf {
 
 #[cfg(test)]
 mod tests {
-    use crate::vm::errors::Error;
+    use crate::vm::errors::VmExecutionError as Error;
     use crate::vm::types::{
         BuffData, BufferLength, PrincipalData, SequenceData, SequenceSubtype, TypeSignature,
     };
@@ -368,7 +368,7 @@ mod tests {
         crosscheck(
             &format!("(principal-of? 0x{pubkey_32_bytes})"),
             Err(Error::Unchecked(
-                crate::vm::errors::CheckErrors::TypeValueError(
+                crate::vm::errors::CheckErrorKind::TypeValueError(
                     Box::new(TypeSignature::SequenceType(SequenceSubtype::BufferType(
                         BufferLength::try_from(33_u32).unwrap(),
                     ))),

@@ -79,6 +79,8 @@ pub struct ProposalEvalConfig {
     pub tenure_last_block_proposal_timeout: Duration,
     /// How much idle time must pass before allowing a tenure extend
     pub tenure_idle_timeout: Duration,
+    /// How much idle time must pass before allowing a read-count tenure extend
+    pub read_count_idle_timeout: Duration,
     /// How much buffer to add to the tenure idle timeout sent to miners to account for clock skew
     pub tenure_idle_timeout_buffer: Duration,
     /// Time following the last block of the previous tenure's global acceptance that a signer will consider an attempt by
@@ -102,6 +104,7 @@ impl From<&SignerConfig> for ProposalEvalConfig {
             tenure_idle_timeout_buffer: value.tenure_idle_timeout_buffer,
             proposal_wait_for_parent_time: value.proposal_wait_for_parent_time,
             reset_replay_set_after_fork_blocks: value.reset_replay_set_after_fork_blocks,
+            read_count_idle_timeout: value.read_count_idle_timeout,
         }
     }
 }

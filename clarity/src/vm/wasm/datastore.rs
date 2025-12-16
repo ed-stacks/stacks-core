@@ -23,9 +23,11 @@ use crate::util::hash::Sha512Trunc256Sum;
 use crate::vm::analysis::AnalysisDatabase;
 use crate::vm::costs::ExecutionCost;
 use crate::vm::database::{BurnStateDB, ClarityBackingStore, HeadersDB};
-use crate::vm::errors::{InterpreterError, InterpreterResult as Result};
+use crate::vm::errors::{CheckErrorKind, VmExecutionError};
 use crate::vm::types::{QualifiedContractIdentifier, TupleData};
 use crate::vm::{StacksEpoch, Value};
+
+type Result<T, E = VmExecutionError> = std::result::Result<T, E>;
 
 #[derive(Clone, Debug)]
 pub struct Datastore {
@@ -214,18 +216,17 @@ impl ClarityBackingStore for Datastore {
             .block_id_lookup
             .get(&self.current_chain_tip)
             .ok_or_else(|| {
-                InterpreterError::Expect(
-                    "Could not find current chain tip in block_id_lookup map".to_string(),
-                )
+                VmExecutionError::Unchecked(CheckErrorKind::Expects(format!(
+                    "Could not find current chain tip in block_id_lookup map"
+                )))
             })?;
 
         if let Some(map) = self.store.get(lookup_id) {
             Ok(map.get(key).cloned())
         } else {
-            Err(
-                InterpreterError::Expect("Block does not exist for current chain tip".to_string())
-                    .into(),
-            )
+            Err(VmExecutionError::Unchecked(CheckErrorKind::Expects(
+                format!("Block does not exist for current chain tip"),
+            )))
         }
     }
 

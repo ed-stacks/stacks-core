@@ -291,7 +291,7 @@ impl ComplexWord for UnwrapErrPanic {
 
 #[cfg(test)]
 mod tests {
-    use crate::vm::errors::{Error, RuntimeErrorType};
+    use crate::vm::errors::{RuntimeError, VmExecutionError as Error};
     use crate::vm::wasm::tools::{crosscheck, crosscheck_expect_failure, evaluate};
     use crate::vm::Value;
 
@@ -362,7 +362,7 @@ mod tests {
         crosscheck(
             snippet,
             Err(Error::Runtime(
-                RuntimeErrorType::UnwrapFailure,
+                RuntimeError::UnwrapFailure,
                 Some(Vec::new()),
             )),
         )
@@ -384,7 +384,7 @@ mod tests {
         crosscheck(
             snippet,
             Err(Error::Runtime(
-                RuntimeErrorType::UnwrapFailure,
+                RuntimeError::UnwrapFailure,
                 Some(Vec::new()),
             )),
         )
@@ -406,7 +406,7 @@ mod tests {
         crosscheck(
             snippet,
             Err(Error::Runtime(
-                RuntimeErrorType::UnwrapFailure,
+                RuntimeError::UnwrapFailure,
                 Some(Vec::new()),
             )),
         )

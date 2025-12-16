@@ -8,7 +8,7 @@ use clarity::vm::contexts::{CallStack, EventBatch, GlobalContext};
 use clarity::vm::contracts::Contract;
 use clarity::vm::costs::LimitedCostTracker;
 use clarity::vm::database::{ClarityDatabase, MemoryBackingStore};
-use clarity::vm::errors::{CheckErrors, Error, RuntimeErrorType};
+use clarity::vm::errors::{RuntimeError, VmExecutionError as Error};
 use clarity::vm::events::StacksTransactionEvent;
 use clarity::vm::types::{
     PrincipalData, QualifiedContractIdentifier, ResponseData, StandardPrincipalData, TupleData,
@@ -76,7 +76,11 @@ macro_rules! test_multi_contract_init {
                             analysis_db,
                             false,
                         )
-                        .map_err(|_| CheckErrors::Expects("Compilation failure".to_string()))
+                        .map_err(|_| {
+                            clarity::vm::errors::StaticCheckErrorKind::Expects(
+                                "Compilation failure".to_string(),
+                            )
+                        })
                     })
                     .expect("Failed to compile contract.");
 
@@ -312,7 +316,7 @@ macro_rules! test_contract_call_response {
 /// - an optional list of parameters,
 /// - a closure with type `|result: Result<Value, Error>|`
 ///   that contains all the assertions we want to test on the result, and
-/// - a closure with type `|events: &Vec<EventBatch>|`,
+/// - a closure with type `|events: &Vec<(EventBatch, u64)>|`,
 ///   that contains all the assertions we want to test on the events.
 macro_rules! test_multi_contract_call_events {
     ($func: ident, $init_contracts: expr, $contract_name: literal, $contract_func: literal, $params: expr, $test_result: expr, $test_events: expr) => {
@@ -367,7 +371,7 @@ macro_rules! test_multi_contract_call_events {
 /// - an optional list of parameters,
 /// - a closure with type `|result: Result<Value, Error>|`
 ///   that contains all the assertions we want to test on the result, and
-/// - a closure with type `|events: &Vec<EventBatch>|`,
+/// - a closure with type `|events: &Vec<(EventBatch, u64)>|`,
 ///   that contains all the assertions we want to test on the events.
 #[allow(unused_macros)]
 macro_rules! test_contract_call_events {
@@ -404,7 +408,7 @@ macro_rules! test_contract_call_events {
 /// - an optional list of parameters,
 /// - a closure with type `|result: Result<Value, Error>|`,
 ///   that contains all the assertions we want to test on the result, and
-/// - a closure with type `|events: &Vec<EventBatch>|`,
+/// - a closure with type `|events: &Vec<(EventBatch, u64)>|`,
 ///   that contains all the assertions we want to test on the events.
 macro_rules! test_multi_contract_call_response_events {
     ($func: ident, $init_contracts: expr, $contract_name: literal, $contract_func: literal, $params: expr, $test_response: expr, $test_events: expr) => {
@@ -450,7 +454,7 @@ macro_rules! test_multi_contract_call_response_events {
 /// - an optional list of parameters,
 /// - a closure with type `|response: ResponseData|`,
 ///   that contains all the assertions we want to test on the response, and
-/// - a closure with type `|events: &Vec<EventBatch>|`,
+/// - a closure with type `|events: &Vec<(EventBatch, u64)>|`,
 ///   that contains all the assertions we want to test on the events.
 macro_rules! test_contract_call_response_events {
     ($func: ident, $contract_name: literal, $contract_func: literal, $params: expr, $test_response: expr, $test_events: expr) => {
@@ -1380,10 +1384,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::Int(12345));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1405,10 +1409,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::UInt(98765));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1435,10 +1439,10 @@ test_contract_call_response_events!(
             )
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1470,10 +1474,10 @@ test_contract_call_response_events!(
             )
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1500,10 +1504,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::Int(12345));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1525,10 +1529,10 @@ test_contract_call_response_events!(
         assert!(!response.committed);
         assert_eq!(*response.data, Value::UInt(98765));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1555,10 +1559,10 @@ test_contract_call_response_events!(
             )
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1591,10 +1595,10 @@ test_contract_call_response_events!(
             )
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1622,10 +1626,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::Bool(true));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1647,10 +1651,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::Bool(false));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1672,10 +1676,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::none());
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1697,10 +1701,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::some(Value::Int(42)).unwrap());
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1726,10 +1730,10 @@ test_contract_call_response_events!(
                 .unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1767,10 +1771,10 @@ test_contract_call_response_events!(
             .unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1807,10 +1811,10 @@ test_contract_call_response_events!(
             Value::cons_list_unsanitized(vec![]).unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1835,10 +1839,10 @@ test_contract_call_response_events!(
             Value::buff_from(vec![0xde, 0xad, 0xbe, 0xef]).unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1863,10 +1867,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::buff_from(vec![]).unwrap());
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1888,10 +1892,10 @@ test_contract_call_response_events!(
         assert!(response.committed);
         assert_eq!(*response.data, Value::UInt(1));
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1916,10 +1920,10 @@ test_contract_call_response_events!(
             Value::string_utf8_from_bytes("helŁo world 愛🦊".into()).unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1947,10 +1951,10 @@ test_contract_call_response_events!(
             Value::string_ascii_from_bytes("hello world".to_string().into_bytes()).unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -1978,10 +1982,10 @@ test_contract_call_response_events!(
             Value::string_ascii_from_bytes(vec![]).unwrap()
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -2012,10 +2016,10 @@ test_contract_call_response_events!(
             )
         );
     },
-    |event_batches: &Vec<EventBatch>| {
+    |event_batches: &Vec<(EventBatch, u64)>| {
         assert_eq!(event_batches.len(), 1);
-        assert_eq!(event_batches[0].events.len(), 1);
-        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].events[0] {
+        assert_eq!(event_batches[0].0.events.len(), 1);
+        if let StacksTransactionEvent::SmartContractEvent(event) = &event_batches[0].0.events[0] {
             let (ref contract, ref label) = &event.key;
             assert_eq!(
                 contract,
@@ -4096,7 +4100,7 @@ test_contract_call_error!(
     |error: Error| {
         assert_eq!(
             error,
-            Error::Runtime(RuntimeErrorType::DivisionByZero, Some(Vec::new()))
+            Error::Runtime(RuntimeError::DivisionByZero, Some(Vec::new()))
         );
     }
 );
@@ -4109,7 +4113,7 @@ test_contract_call_error!(
         assert_eq!(
             error,
             Error::Runtime(
-                RuntimeErrorType::Arithmetic(
+                RuntimeError::Arithmetic(
                     "Power argument to (pow ...) must be a u32 integer".to_string()
                 ),
                 Some(Vec::new())
@@ -4126,7 +4130,7 @@ test_contract_call_error!(
         assert_eq!(
             error,
             Error::Runtime(
-                RuntimeErrorType::Arithmetic("sqrti must be passed a positive integer".to_string()),
+                RuntimeError::Arithmetic("sqrti must be passed a positive integer".to_string()),
                 Some(Vec::new())
             )
         );
@@ -4141,7 +4145,7 @@ test_contract_call_error!(
         assert_eq!(
             error,
             Error::Runtime(
-                RuntimeErrorType::Arithmetic("log2 must be passed a positive integer".to_string()),
+                RuntimeError::Arithmetic("log2 must be passed a positive integer".to_string()),
                 Some(Vec::new())
             )
         );
@@ -4155,7 +4159,7 @@ test_contract_call_error!(
     |error: Error| {
         assert_eq!(
             error,
-            Error::Runtime(RuntimeErrorType::ArithmeticOverflow, Some(Vec::new()))
+            Error::Runtime(RuntimeError::ArithmeticOverflow, Some(Vec::new()))
         );
     }
 );
@@ -4167,7 +4171,7 @@ test_contract_call_error!(
     |error: Error| {
         assert_eq!(
             error,
-            Error::Runtime(RuntimeErrorType::ArithmeticUnderflow, Some(Vec::new()))
+            Error::Runtime(RuntimeError::ArithmeticUnderflow, Some(Vec::new()))
         );
     }
 );
@@ -4180,7 +4184,7 @@ test_contract_call_error!(
         assert_eq!(
             error,
             Error::Runtime(
-                RuntimeErrorType::UnknownBlockHeaderHash(BlockHeaderHash([0xff; 32])),
+                RuntimeError::UnknownBlockHeaderHash(BlockHeaderHash([0xff; 32])),
                 None
             )
         );

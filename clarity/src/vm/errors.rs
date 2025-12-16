@@ -15,16 +15,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub use clarity_types::errors::{
-    Error, IncomparableError, InterpreterError, InterpreterResult, RuntimeErrorType,
-    ShortReturnType,
+    EarlyReturnError, IncomparableError, RuntimeError, VmExecutionError, VmInternalError,
 };
 
 #[cfg(feature = "clarity-wasm")]
 pub use clarity_types::errors::WasmError;
 
 pub use crate::vm::analysis::errors::{
-    check_argument_count, check_arguments_at_least, check_arguments_at_most, CheckErrors,
-    SyntaxBindingError, SyntaxBindingErrorType,
+    check_argument_count, check_arguments_at_least, check_arguments_at_most, CheckErrorKind,
+    CommonCheckErrorKind, StaticCheckError, StaticCheckErrorKind, SyntaxBindingError,
+    SyntaxBindingErrorType,
 };
 
 #[cfg(test)]

@@ -156,7 +156,7 @@ impl ComplexWord for DefinePublicFunction {
 #[cfg(test)]
 mod tests {
     use crate::types::StacksEpochId;
-    use crate::vm::errors::{CheckErrors, Error};
+    use crate::vm::errors::{CheckErrorKind, VmExecutionError as Error};
     use crate::vm::wasm::tools::{
         crosscheck, crosscheck_expect_failure, crosscheck_multi_contract, evaluate, TestEnvironment,
     };
@@ -446,13 +446,13 @@ mod tests {
 ";
         crosscheck(
             &format!("{snippet} (foo 1 2 3 4)"),
-            Err(Error::Unchecked(CheckErrors::NameAlreadyUsed(
+            Err(Error::Unchecked(CheckErrorKind::NameAlreadyUsed(
                 "a".to_string(),
             ))),
         );
         crosscheck(
             &format!("{snippet} (bar 1 2 3 4)"),
-            Err(Error::Unchecked(CheckErrors::NameAlreadyUsed(
+            Err(Error::Unchecked(CheckErrorKind::NameAlreadyUsed(
                 "d".to_string(),
             ))),
         );
@@ -473,7 +473,7 @@ mod tests {
                 (first_contract_name, first_snippet),
                 (second_contract_name, &second_snippet),
             ],
-            Err(Error::Unchecked(CheckErrors::NameAlreadyUsed(
+            Err(Error::Unchecked(CheckErrorKind::NameAlreadyUsed(
                 "a".to_string(),
             ))),
         );
@@ -489,7 +489,7 @@ mod tests {
 (define-read-only (get-symbol) (ok "RKT"))
 (define-read-only (get-token-uri) (ok none))
             "#,
-            Err(Error::Unchecked(CheckErrors::NameAlreadyUsed(
+            Err(Error::Unchecked(CheckErrorKind::NameAlreadyUsed(
                 "get-symbol".to_string(),
             ))),
         )
