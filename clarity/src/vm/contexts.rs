@@ -1393,11 +1393,37 @@ impl<'a, 'b> Environment<'a, 'b> {
             self.global_context.begin();
         }
 
-        let next_contract_context = next_contract_context.unwrap_or(self.contract_context);
+        let mut next_contract_context = next_contract_context
+            .cloned()
+            .unwrap_or(self.contract_context.clone());
 
         let result = {
             #[cfg(feature = "clarity-wasm")]
-            if next_contract_context.wasm_module.is_some() {
+            {
+                use crate::vm::wasm::compile_contract;
+
+                // NOTE: If there is no compiled contract, but we compile anyway
+                //       This is only ok in the context of the replay tool, otherwise it is far too
+                //       expensive
+                if next_contract_context.wasm_module.is_none() {
+                    use clarity_types::diagnostic::DiagnosableError;
+                    use clarity_types::errors::WasmError;
+
+                    let analysis = self
+                        .global_context
+                        .database
+                        .load_contract_analysis(&next_contract_context.contract_identifier)?
+                        .expect(
+                            "Contract analysis not present even when the contract is in the MARF",
+                        );
+
+                    let mut module = compile_contract(analysis).map_err(|err| {
+                        VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
+                    })?;
+
+                    next_contract_context.wasm_module = Some(module.emit_wasm());
+                }
+
                 call_function(
                     &function.get_name(),
                     args,
@@ -1408,16 +1434,6 @@ impl<'a, 'b> Environment<'a, 'b> {
                     self.caller.clone(),
                     self.sponsor.clone(),
                 )
-            } else {
-                let mut nested_env = Environment::new(
-                    &mut self.global_context,
-                    next_contract_context,
-                    self.call_stack,
-                    self.sender.clone(),
-                    self.caller.clone(),
-                    self.sponsor.clone(),
-                );
-                function.execute_apply(args, &mut nested_env)
             }
             #[cfg(not(feature = "clarity-wasm"))]
             {

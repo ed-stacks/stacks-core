@@ -1271,12 +1271,10 @@ pub fn call_function<'a>(
         .contract_context()
         .lookup_function(function_name)
         .ok_or(CheckErrorKind::UndefinedFunction(function_name.to_string()))?;
-    let module = context
-        .contract_context()
-        .with_wasm_module(|wasm_module| unsafe {
-            Module::deserialize(&engine, wasm_module)
-                .map_err(|e| Error::Wasm(WasmError::UnableToLoadModule(e)))
-        })?;
+    let module = context.contract_context().with_wasm_module(|wasm_module| {
+        Module::from_binary(&engine, wasm_module)
+            .map_err(|e| Error::Wasm(WasmError::UnableToLoadModule(e)))
+    })?;
     let mut store = Store::new(&engine, context);
     let mut linker = Linker::new(&engine);
 

@@ -94,6 +94,7 @@ pub enum Error {
     InvalidChainstateDB,
     BlockTooBigError,
     BlockCostLimitError,
+    BlockCostMismatch(ExecutionCost, ExecutionCost),
     TransactionTooBigError(Option<ExecutionCost>),
     BlockCostExceeded,
     NoTransactionsToMine,
@@ -160,6 +161,10 @@ impl fmt::Display for Error {
             Error::InvalidChainstateDB => write!(f, "Invalid chainstate database"),
             Error::BlockTooBigError => write!(f, "Too much data in block"),
             Error::BlockCostLimitError => write!(f, "Block cost limit exceeded"),
+            Error::BlockCostMismatch(ref expected, ref evaluated) => write!(
+                f,
+                "Block cost mismatch on replay. Expected: {expected} Evaluated: {evaluated}"
+            ),
             Error::TransactionTooBigError(ref c) => {
                 write!(f, "Too much data in transaction: measured_cost={c:?}")
             }
@@ -244,6 +249,7 @@ impl error::Error for Error {
             Error::BlockCostLimitError => None,
             Error::TransactionTooBigError(..) => None,
             Error::BlockCostExceeded => None,
+            Error::BlockCostMismatch(_, _) => None,
             Error::MicroblockStreamTooLongError => None,
             Error::IncompatibleSpendingConditionError => None,
             Error::CostOverflowError(..) => None,
@@ -288,6 +294,7 @@ impl Error {
             Error::NoSuchBlockError => "NoSuchBlockError",
             Error::InvalidChainstateDB => "InvalidChainstateDB",
             Error::BlockTooBigError => "BlockTooBigError",
+            Error::BlockCostMismatch(_, _) => "BlockCostMismatch",
             Error::BlockCostLimitError => "BlockCostLimitError",
             Error::TransactionTooBigError(..) => "TransactionTooBigError",
             Error::BlockCostExceeded => "BlockCostExceeded",

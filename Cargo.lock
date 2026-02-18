@@ -4348,6 +4348,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "stacks-replay-wasm"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "clarity",
+ "clarity-cli",
+ "libstackerdb",
+ "mutants",
+ "rayon",
+ "regex",
+ "rusqlite",
+ "serde_json",
+ "slog",
+ "stacks-common",
+ "stackslib",
+ "tikv-jemallocator",
+]
+
+[[package]]
 name = "stacks-signer"
 version = "0.0.1"
 dependencies = [

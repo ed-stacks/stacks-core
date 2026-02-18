@@ -16,20 +16,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use clar2wasm::compile_contract;
 use clarity::vm::analysis::types::ContractAnalysis;
 use clarity::vm::clarity::TransactionConnection;
 use clarity::vm::contexts::{AssetMap, AssetMapEntry, Environment};
 use clarity::vm::costs::cost_functions::ClarityCostFunction;
 use clarity::vm::costs::{runtime_cost, CostTracker, ExecutionCost};
 use clarity::vm::diagnostic::DiagnosableError;
-use clarity::vm::errors::{VmExecutionError, VmInternalError};
+use clarity::vm::errors::{VmExecutionError, VmInternalError, WasmError};
 use clarity::vm::representations::ClarityName;
 use clarity::vm::types::{
     AssetIdentifier, BuffData, PrincipalData, QualifiedContractIdentifier, SequenceData,
     StacksAddressExtensions as ClarityStacksAddressExt, StandardPrincipalData, TupleData,
     TypeSignature, Value,
 };
+use clarity::vm::wasm::compile_contract;
 
 use crate::chainstate::nakamoto::miner::MinerTenureInfoCause;
 use crate::chainstate::stacks::db::*;
@@ -1331,7 +1331,7 @@ impl StacksChainState {
 
                 debug!("Compiling the contract to wasm binary");
                 let mut module = compile_contract(contract_analysis.clone()).map_err(|e| {
-                    Error::ClarityError(clarity_error::Wasm(WasmError::WasmGeneratorError(
+                    Error::ClarityError(ClarityError::Wasm(WasmError::WasmGeneratorError(
                         e.message(),
                     )))
                 })?;
@@ -9596,7 +9596,7 @@ pub mod test {
                 panic!("Did not get unchecked interpreter error");
             } else if !matches!(
                 &err,
-                Error::ClarityError(clarity_error::Wasm(WasmError::WasmGeneratorError(_)))
+                Error::ClarityError(ClarityError::Wasm(WasmError::WasmGeneratorError(_)))
             ) {
                 panic!("Did not get WASM generator error");
             }
@@ -9706,7 +9706,7 @@ pub mod test {
                 panic!("Did not get unchecked interpreter error");
             } else if !matches!(
                 &err,
-                Error::ClarityError(clarity_error::Wasm(WasmError::WasmGeneratorError(_)))
+                Error::ClarityError(ClarityError::Wasm(WasmError::WasmGeneratorError(_)))
             ) {
                 panic!("Did not get WASM generator error");
             }
