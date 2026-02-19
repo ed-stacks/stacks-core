@@ -18,13 +18,11 @@ extern crate stacks_common;
 
 use std::panic;
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
 use std::time::SystemTime;
 
 use clap::Parser;
 use clarity::types::chainstate::StacksBlockId;
 use clarity::types::sqlite::NO_PARAMS;
-use rayon::ThreadPoolBuilder;
 use rusqlite::Connection;
 use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
@@ -42,10 +40,6 @@ struct Cli {
     start_block: u64,
     /// Block to end replay on
     end_block: u64,
-    /// Number of jobs to perform in parallel. Defaults to the number of threads
-    /// in the system.
-    #[arg(short)]
-    jobs: Option<usize>,
 }
 
 fn main() {
@@ -75,13 +69,7 @@ struct BlockReplay {
 }
 
 fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let mut pool = ThreadPoolBuilder::new().thread_name(|tnum| format!("block-replay-{tnum}"));
-    if let Some(jobs) = cli.jobs {
-        pool = pool.num_threads(jobs);
-    }
-    let pool = pool.build()?;
-
-    let db_path = Arc::new(cli.database_path.display().to_string());
+    let db_path = cli.database_path.display().to_string();
 
     let (chainstate, _) = StacksChainState::open(
         DEFAULT_MAINNET_CONFIG.is_mainnet(),
@@ -93,6 +81,13 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let chainstate_conn = chainstate.nakamoto_blocks_db();
     let result_conn = Connection::open(format!("{db_path}/replay/"))?;
 
+    let mut count_stmt = chainstate_conn.prepare(&format!(
+        "SELECT COUNT(*) \
+         FROM   nakamoto_staging_blocks \
+         WHERE  orphaned = 0 \
+         AND    height BETWEEN {} AND {}",
+        cli.start_block, cli.end_block
+    ))?;
     let mut block_stmt = chainstate_conn.prepare(&format!(
         "SELECT index_block_hash, height \
          FROM   nakamoto_staging_blocks \
@@ -119,55 +114,32 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
          (?1, ?2, ?3, ?4)"
     ))?;
 
-    let mut block_count = 0u64;
+    let block_count: u64 = count_stmt.query_row(NO_PARAMS, |row| row.get(0))?;
 
+    let mut block_index = 0u64;
     let mut blocks = block_stmt.query(NO_PARAMS)?;
-    let (sender, receiver) = mpsc::channel();
 
     while let Some(row) = blocks.next()? {
         let block_hash: String = row.get(0)?;
         let block_height: u64 = row.get(1)?;
 
-        let db_path = db_path.clone();
-        let sender = sender.clone();
+        let result = panic::catch_unwind(|| {
+            replay_staging_block(&db_path, &block_hash, &DEFAULT_MAINNET_CONFIG)
+                .map_err(|err| format!("error: {err}"))
+        })
+        .map_err(|_err| format!("panic: unknown reason"))
+        .flatten();
 
-        pool.spawn(move || {
-            let result = panic::catch_unwind(|| {
-                replay_staging_block(&db_path, &block_hash, &DEFAULT_MAINNET_CONFIG)
-                    .map_err(|err| format!("error: {err}"))
-            })
-            .map_err(|_err| format!("panic: unknown reason"))
-            .flatten();
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-            let timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+        insert_stmt.execute((block_hash, block_height, timestamp, result.err()))?;
 
-            let _ = sender.send(BlockReplay {
-                block_hash,
-                block_height,
-                timestamp,
-                error: result.err(),
-            });
-        });
+        block_index += 1;
 
-        block_count += 1;
-    }
-
-    drop(sender);
-
-    for b in 1..=block_count {
-        println!("{b}/{block_count}");
-
-        let replay = receiver.recv()?;
-
-        insert_stmt.execute((
-            replay.block_hash,
-            replay.block_height,
-            replay.timestamp,
-            replay.error,
-        ))?;
+        println!("{block_index}/{block_count}");
     }
 
     Ok(())
