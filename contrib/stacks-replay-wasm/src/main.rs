@@ -16,9 +16,11 @@
 #[macro_use]
 extern crate stacks_common;
 
-use std::panic;
+use std::backtrace::Backtrace;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::SystemTime;
+use std::{mem, panic};
 
 use clap::Parser;
 use clarity::types::chainstate::StacksBlockId;
@@ -69,6 +71,11 @@ struct BlockReplay {
 }
 
 fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    static BACKTRACE: Mutex<String> = Mutex::new(String::new());
+    panic::set_hook(Box::new(|_| {
+        *BACKTRACE.lock().unwrap() = Backtrace::force_capture().to_string();
+    }));
+
     let db_path = cli.database_path.display().to_string();
 
     let (chainstate, _) = StacksChainState::open(
@@ -127,7 +134,12 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             replay_staging_block(&db_path, &block_hash, &DEFAULT_MAINNET_CONFIG)
                 .map_err(|err| format!("error: {err}"))
         })
-        .map_err(|_err| format!("panic: unknown reason"))
+        .map_err(|_err| {
+            let mut backtrace_lock = BACKTRACE.lock().unwrap();
+            let mut backtrace = String::new();
+            mem::swap(&mut *backtrace_lock, &mut backtrace);
+            format!("panic: {backtrace}")
+        })
         .flatten();
 
         let timestamp = SystemTime::now()
