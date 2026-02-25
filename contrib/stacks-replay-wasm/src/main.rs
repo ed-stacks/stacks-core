@@ -17,15 +17,19 @@
 extern crate stacks_common;
 
 use std::backtrace::Backtrace;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
-use std::{mem, panic};
+use std::{io, mem, panic};
 
 use clap::Parser;
 use clarity::types::chainstate::StacksBlockId;
 use clarity::types::sqlite::NO_PARAMS;
+use clarity::util::log::INJECTED_LOGGER;
+use indicatif::{ProgressBar, ProgressStyle};
 use rusqlite::Connection;
+use slog::Drain;
 use stackslib::chainstate::burn::db::sortdb::{SortitionDB, get_ancestor_sort_id};
 use stackslib::chainstate::coordinator::OnChainRewardSetProvider;
 use stackslib::chainstate::nakamoto::{NakamotoBlock, NakamotoChainState};
@@ -63,18 +67,41 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     validate_blocks(cli)
 }
 
-struct BlockReplay {
-    block_hash: String,
-    block_height: u64,
-    timestamp: u64,
-    error: Option<String>,
+static BACKTRACE: Mutex<String> = Mutex::new(String::new());
+static LOGSTRING: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+struct LogString;
+
+impl Write for LogString {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        LOGSTRING.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        LOGSTRING.lock().unwrap().flush()
+    }
+}
+
+impl LogString {
+    fn clear() -> String {
+        let mut logstring = LOGSTRING.lock().unwrap();
+        let mut string = Vec::new();
+        mem::swap(&mut *logstring, &mut string);
+        String::from_utf8(string).expect("Expected strings to be written to logs")
+    }
 }
 
 fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    static BACKTRACE: Mutex<String> = Mutex::new(String::new());
-    panic::set_hook(Box::new(|_| {
-        *BACKTRACE.lock().unwrap() = Backtrace::force_capture().to_string();
+    // panic information along with a backtrace on a panic available in `BACKTRACE`
+    panic::set_hook(Box::new(|panic_info| {
+        *BACKTRACE.lock().unwrap() = format!("{panic_info}\n{}", Backtrace::force_capture());
     }));
+
+    // inject a logger to capture `slog` logs
+    let decorator = slog_term::PlainSyncDecorator::new(LogString);
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let logger = slog::Logger::root(drain, slog::o!());
+    *INJECTED_LOGGER.lock().unwrap() = Some(logger);
 
     let db_path = cli.database_path.display().to_string();
 
@@ -108,6 +135,7 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 block_hash   TEXT    NOT NULL, \
                 block_height INTEGER NOT NULL, \
                 timestamp    INTEGER NOT NULL, \
+                logs         TEXT    NOT NULL, \
                 error        TEXT, \
                 PRIMARY KEY  (block_hash, block_height)
             )"
@@ -116,14 +144,18 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut insert_stmt = result_conn.prepare(&format!(
         "INSERT OR REPLACE INTO replays \
-         (block_hash, block_height, timestamp, error) \
+         (block_hash, block_height, timestamp, logs, error) \
          VALUES \
-         (?1, ?2, ?3, ?4)"
+         (?1, ?2, ?3, ?4, ?5)"
     ))?;
 
     let block_count: u64 = count_stmt.query_row(NO_PARAMS, |row| row.get(0))?;
+    let bar = ProgressBar::new(block_count);
+    let bar = bar.with_style(
+        ProgressStyle::with_template("[{elapsed_precise}] {wide_bar} {pos}/{len} [{eta_precise}]")
+            .unwrap(),
+    );
 
-    let mut block_index = 0u64;
     let mut blocks = block_stmt.query(NO_PARAMS)?;
 
     while let Some(row) = blocks.next()? {
@@ -147,12 +179,18 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap()
             .as_secs();
 
-        insert_stmt.execute((block_hash, block_height, timestamp, result.err()))?;
+        insert_stmt.execute((
+            block_hash,
+            block_height,
+            timestamp,
+            LogString::clear(),
+            result.err(),
+        ))?;
 
-        block_index += 1;
-
-        println!("{block_index}/{block_count}");
+        bar.inc(1);
     }
+
+    bar.finish();
 
     Ok(())
 }
@@ -228,7 +266,7 @@ fn replay_block_nakamoto(
         &block.header.block_id(),
     )
     .unwrap() else {
-        println!("Failed to find cost for block {}", block.header.block_id());
+        error!("Failed to find cost for block {}", block.header.block_id());
         return Ok(());
     };
 
@@ -240,7 +278,7 @@ fn replay_block_nakamoto(
             &block.header.parent_block_id,
         )
         .unwrap() else {
-            println!(
+            error!(
                 "Failed to find cost for parent of block {}",
                 block.header.block_id()
             );
@@ -429,7 +467,7 @@ fn replay_block_nakamoto(
     if let Some(receipt) = ok_opt {
         let evaluated_cost = receipt.anchored_block_cost.clone();
         if evaluated_cost != expected_cost {
-            println!(
+            error!(
                 "Failed processing block! block = {block_id}. Unexpected cost. expected = {expected_cost}, evaluated = {evaluated_cost}"
             );
             return Err(Error::BlockCostMismatch(expected_cost, evaluated_cost));

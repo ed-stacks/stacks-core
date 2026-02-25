@@ -15,6 +15,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::io::Write;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use std::{env, io, thread};
 
@@ -22,6 +23,10 @@ use chrono::prelude::*;
 use lazy_static::lazy_static;
 use slog::{Drain, Level, Logger, OwnedKVList, Record, KV};
 use slog_term::{CountingWriter, Decorator, RecordDecorator, Serializer};
+
+lazy_static! {
+    pub static ref INJECTED_LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
+}
 
 lazy_static! {
     pub static ref LOGGER: Logger = make_logger();
@@ -219,7 +224,9 @@ fn make_json_logger() -> Logger {
 }
 
 fn make_logger() -> Logger {
-    if env::var("STACKS_LOG_JSON") == Ok("1".into()) {
+    if let Some(logger) = INJECTED_LOGGER.lock().unwrap().take() {
+        logger
+    } else if env::var("STACKS_LOG_JSON") == Ok("1".into()) {
         make_json_logger()
     } else {
         let debug = env::var("STACKS_LOG_DEBUG") == Ok("1".into());

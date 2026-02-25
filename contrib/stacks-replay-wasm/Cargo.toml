@@ -12,8 +12,10 @@ regex = { version = "1", default-features = false }
 rusqlite = { workspace = true, features = ["blob", "serde_json"] }
 serde_json = { workspace = true }
 slog = { workspace = true }
+slog-term = { version = "2.6.0", default-features = false }
 stacks-common = { path = "../../stacks-common", default-features = false }
 stackslib = { package = "stackslib", path = "../../stackslib", default-features = false }
+indicatif = "0.18.4"
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows", target_arch = "arm")))'.dependencies]
 tikv-jemallocator = { workspace = true }
