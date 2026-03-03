@@ -190,8 +190,7 @@ impl RPCRequestHandler for RPCGetClarityMetadataRequestHandler {
                 |clarity_tx| {
                     clarity_tx.with_clarity_db_readonly(|clarity_db| {
                         let data = clarity_db
-                            .store
-                            .get_metadata(&contract_identifier, &clarity_metadata_key)
+                            .fetch_metadata(&contract_identifier, &clarity_metadata_key)
                             .ok()
                             .flatten()?;
 

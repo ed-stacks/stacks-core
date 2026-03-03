@@ -30,17 +30,24 @@ use crate::vm::types::FunctionType;
 use crate::vm::ClarityVersion;
 
 pub struct AnalysisDatabase<'a> {
-    store: RollbackWrapper<'a>,
+    pub(crate) store: RollbackWrapper<'a>,
 }
 
 impl<'a> AnalysisDatabase<'a> {
+    pub const STORAGE_KEY: &'static str = "analysis";
+
     pub fn new(store: &'a mut dyn ClarityBackingStore) -> AnalysisDatabase<'a> {
         AnalysisDatabase {
             store: RollbackWrapper::new(store),
         }
     }
+
     pub fn new_with_rollback_wrapper(store: RollbackWrapper<'a>) -> AnalysisDatabase<'a> {
         AnalysisDatabase { store }
+    }
+
+    pub fn destroy(self) -> RollbackWrapper<'a> {
+        self.store
     }
 
     pub fn execute<F, T, E>(&mut self, f: F) -> Result<T, E>
@@ -75,10 +82,6 @@ impl<'a> AnalysisDatabase<'a> {
             .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")).into())
     }
 
-    pub fn storage_key() -> &'static str {
-        "analysis"
-    }
-
     // used by tests to ensure that
     //   the contract -> contract hash key exists in the marf
     //    even if the contract isn't published.
@@ -92,7 +95,7 @@ impl<'a> AnalysisDatabase<'a> {
 
     pub fn has_contract(&mut self, contract_identifier: &QualifiedContractIdentifier) -> bool {
         self.store
-            .has_metadata_entry(contract_identifier, AnalysisDatabase::storage_key())
+            .has_metadata_entry(contract_identifier, Self::STORAGE_KEY)
     }
 
     /// Load a contract from the database, without canonicalizing its types.
@@ -101,7 +104,7 @@ impl<'a> AnalysisDatabase<'a> {
         contract_identifier: &QualifiedContractIdentifier,
     ) -> Result<Option<ContractAnalysis>, StaticCheckError> {
         self.store
-            .get_metadata(contract_identifier, AnalysisDatabase::storage_key())
+            .get_metadata(contract_identifier, Self::STORAGE_KEY)
             // treat NoSuchContract error thrown by get_metadata as an Option::None --
             //    the analysis will propagate that as a StaticCheckError anyways.
             .ok()
@@ -121,7 +124,7 @@ impl<'a> AnalysisDatabase<'a> {
     ) -> Result<Option<ContractAnalysis>, StaticCheckError> {
         Ok(self
             .store
-            .get_metadata(contract_identifier, AnalysisDatabase::storage_key())
+            .get_metadata(contract_identifier, Self::STORAGE_KEY)
             // treat NoSuchContract error thrown by get_metadata as an Option::None --
             //    the analysis will propagate that as a StaticCheckError anyways.
             .ok()
@@ -143,7 +146,7 @@ impl<'a> AnalysisDatabase<'a> {
         contract_identifier: &QualifiedContractIdentifier,
         contract: &ContractAnalysis,
     ) -> Result<(), StaticCheckError> {
-        let key = AnalysisDatabase::storage_key();
+        let key = Self::STORAGE_KEY;
         if self.store.has_metadata_entry(contract_identifier, key) {
             return Err(StaticCheckErrorKind::ContractAlreadyExists(
                 contract_identifier.to_string(),
@@ -246,9 +249,5 @@ impl<'a> AnalysisDatabase<'a> {
                 contract_identifier.to_string(),
             ))?;
         Ok(contract.implemented_traits)
-    }
-
-    pub fn destroy(self) -> RollbackWrapper<'a> {
-        self.store
     }
 }

@@ -379,11 +379,15 @@ pub fn initialize_contract(
         results.push(placeholder_for_type(result_ty));
     }
 
-    top_level
+    println!("Before top level call");
+
+    dbg!(top_level
         .call(&mut store, &[], results.as_mut_slice())
         .map_err(|e| {
             error_mapping::resolve_error(e, instance, &mut store, &epoch, &clarity_version)
-        })?;
+        }))?;
+
+    println!("After top level call");
 
     // Save the compiled Wasm module into the contract context
     store.data_mut().contract_context_mut()?.set_wasm_module(

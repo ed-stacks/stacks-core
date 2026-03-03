@@ -77,7 +77,7 @@ pub struct DefinedFunction {
     /// Return type of the function
     /// This field is unused in the interpreter, and set to `None`.
     /// When using the Wasm runtime, it should contain the return type.
-    return_type: Option<TypeSignature>,
+    pub return_type: Option<TypeSignature>,
 }
 
 /// This enum handles the actual invocation of the method

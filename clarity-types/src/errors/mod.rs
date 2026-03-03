@@ -28,6 +28,8 @@ pub use lexer::LexerError;
 use rusqlite::Error as SqliteError;
 use stacks_common::types::chainstate::BlockHeaderHash;
 
+#[cfg(feature = "clarity-wasm")]
+use crate::ClarityName;
 use crate::representations::SymbolicExpression;
 use crate::types::{FunctionIdentifier, Value};
 
@@ -234,6 +236,8 @@ pub enum WasmError {
     InvalidListUnionTypeInValue,
     InvalidFunctionKind(i32),
     DefineFunctionCalledInRunMode,
+    ExpectedFunctionInvalidType,
+    ExpectedFunctionNotFound(ClarityName),
     ExpectedReturnValue,
     InvalidIndicator(i32),
     Runtime(wasmtime::Error),
@@ -271,6 +275,12 @@ impl fmt::Display for WasmError {
             WasmError::InvalidFunctionKind(kind) => write!(f, "Invalid function kind: {kind}"),
             WasmError::DefineFunctionCalledInRunMode => {
                 write!(f, "Define function called in run mode")
+            }
+            WasmError::ExpectedFunctionInvalidType => {
+                write!(f, "Expected function has an invalid type")
+            }
+            WasmError::ExpectedFunctionNotFound(name) => {
+                write!(f, "Expected to find non-existing function: {name}")
             }
             WasmError::ExpectedReturnValue => write!(f, "Expected return value"),
             WasmError::InvalidIndicator(indicator) => {
