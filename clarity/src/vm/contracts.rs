@@ -26,7 +26,7 @@ use crate::vm::version::ClarityVersion;
 #[cfg(feature = "clarity-wasm")]
 use crate::vm::wasm::initialize::initialize_contract;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Contract {
     pub contract_context: ContractContext,
 }

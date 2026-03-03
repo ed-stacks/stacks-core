@@ -243,7 +243,7 @@ pub struct GlobalContext<'a> {
     pub engine: Engine,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ContractContext {
     pub contract_identifier: QualifiedContractIdentifier,
     pub variables: HashMap<ClarityName, Value>,
@@ -1269,6 +1269,7 @@ impl<'a, 'b> Environment<'a, 'b> {
 
             let func = contract.contract_context.lookup_function(tx_name)
                 .ok_or_else(|| { CheckErrorKind::UndefinedFunction(tx_name.to_string()) })?;
+
             if !allow_private && !func.is_public() {
                 return Err(CheckErrorKind::NoSuchPublicFunction(contract_identifier.to_string(), tx_name.to_string()).into());
             } else if read_only && !func.is_read_only() {
@@ -1400,28 +1401,81 @@ impl<'a, 'b> Environment<'a, 'b> {
         let result = {
             #[cfg(feature = "clarity-wasm")]
             {
+                use clarity_types::diagnostic::DiagnosableError;
+                use clarity_types::errors::WasmError;
+
+                use crate::vm::analysis::{run_analysis, AnalysisDatabase};
+                use crate::vm::ast::build_ast;
+                use crate::vm::database::MemoryBackingStore;
                 use crate::vm::wasm::compile_contract;
+                use crate::vm::wasm::initialize::initialize_contract;
+                use crate::vm::wasm::utils;
 
                 // NOTE: If there is no compiled contract, but we compile anyway
                 //       This is only ok in the context of the replay tool, otherwise it is far too
                 //       expensive
                 if next_contract_context.wasm_module.is_none() {
-                    use clarity_types::diagnostic::DiagnosableError;
-                    use clarity_types::errors::WasmError;
-
-                    let analysis = self
+                    let contract_src = self
                         .global_context
                         .database
-                        .load_contract_analysis(&next_contract_context.contract_identifier)?
-                        .expect(
-                            "Contract analysis not present even when the contract is in the MARF",
-                        );
+                        .get_contract_src(&next_contract_context.contract_identifier)
+                        .expect("Contract source not available for contract in MARF");
 
-                    let mut module = compile_contract(analysis).map_err(|err| {
+                    let contract_ast_res = build_ast(
+                        &next_contract_context.contract_identifier,
+                        &contract_src,
+                        &mut LimitedCostTracker::new_free(),
+                        next_contract_context.clarity_version,
+                        self.global_context.epoch_id,
+                    );
+
+                    let mut clarity_store = MemoryBackingStore::new();
+                    let mut analysis_db = AnalysisDatabase::new(&mut clarity_store);
+
+                    // FIXME: trait dependencies are not resolved, resulting in an analysis failure
+                    //        - returning `NoSuchContract(_)` error
+
+                    let contract_analysis_res = run_analysis(
+                        &next_contract_context.contract_identifier,
+                        &contract_ast_res?.expressions,
+                        &mut analysis_db,
+                        false,
+                        LimitedCostTracker::new_free(),
+                        self.global_context.epoch_id,
+                        next_contract_context.clarity_version,
+                        true,
+                    )
+                    .map_err(|err| {
+                        VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.0.to_string()))
+                    });
+
+                    let mut contract_analysis = contract_analysis_res?;
+
+                    utils::concretize(&mut contract_analysis).map_err(|err| {
                         VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
                     })?;
 
+                    let mut module =
+                        compile_contract(contract_analysis.clone()).map_err(|err| {
+                            VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
+                        })?;
+
                     next_contract_context.wasm_module = Some(module.emit_wasm());
+
+                    self.global_context.roll_back()?;
+
+                    initialize_contract(
+                        &mut self.global_context,
+                        &mut next_contract_context,
+                        None,
+                        &contract_analysis,
+                    )?;
+
+                    if make_read_only {
+                        self.global_context.begin_read_only();
+                    } else {
+                        self.global_context.begin();
+                    }
                 }
 
                 call_function(

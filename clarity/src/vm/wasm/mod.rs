@@ -159,7 +159,7 @@ pub fn compile_contract(contract_analysis: ContractAnalysis) -> Result<Module, G
     generator.generate()
 }
 
-mod utils {
+pub mod utils {
     use crate::vm::analysis::{ContractAnalysis, StaticCheckErrorKind};
     use crate::vm::types::signatures::FunctionReturnsSignature;
     use crate::vm::types::{FixedFunction, FunctionType};

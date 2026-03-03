@@ -642,15 +642,16 @@ impl<T: MarfTrieId> TrieRAM<T> {
         &mut self,
         storage_tx: &mut TrieStorageTransaction<T>,
     ) -> Result<TrieHash, Error> {
-        if TrieHashCalculationMode::Deferred == storage_tx.deref().hash_calculation_mode
-            || TrieHashCalculationMode::All == storage_tx.deref().hash_calculation_mode
-        {
-            self.inner_seal_marf(storage_tx)
-        } else {
-            // already available
-            let marf_root_hash =
-                self.read_node_hash(&TriePtr::new(TrieNodeID::Node256 as u8, 0, 0))?;
-            Ok(marf_root_hash)
+        match storage_tx.hash_calculation_mode {
+            TrieHashCalculationMode::Deferred | TrieHashCalculationMode::All => {
+                self.inner_seal_marf(storage_tx)
+            }
+            TrieHashCalculationMode::Immediate => {
+                // already available
+                let marf_root_hash =
+                    self.read_node_hash(&TriePtr::new(TrieNodeID::Node256 as u8, 0, 0))?;
+                Ok(marf_root_hash)
+            }
         }
     }
 
