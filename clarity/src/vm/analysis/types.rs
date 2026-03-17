@@ -20,7 +20,7 @@ use clarity_types::representations::ClarityName;
 use clarity_types::types::{QualifiedContractIdentifier, TraitIdentifier, TypeSignature};
 use stacks_common::types::StacksEpochId;
 
-use crate::vm::analysis::analysis_db::AnalysisDatabase;
+use crate::vm::analysis::analysis_db::{AnalysisDatabase, AnalysisDatabaseExt};
 use crate::vm::analysis::contract_interface_builder::ContractInterface;
 use crate::vm::analysis::errors::{StaticCheckError, StaticCheckErrorKind};
 use crate::vm::analysis::type_checker::contexts::TypeMap;
@@ -35,10 +35,10 @@ const SERIALIZE_FAIL_MESSAGE: &str =
     "PANIC: Failed to deserialize bad database data in contract analysis.";
 
 pub trait AnalysisPass {
-    fn run_pass(
+    fn run_pass<'a>(
         epoch: &StacksEpochId,
         contract_analysis: &mut ContractAnalysis,
-        analysis_db: &mut AnalysisDatabase,
+        analysis_db: &mut impl AnalysisDatabaseExt<'a>,
     ) -> Result<(), StaticCheckError>;
 }
 

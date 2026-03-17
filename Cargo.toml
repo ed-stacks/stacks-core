@@ -73,8 +73,8 @@ opt-level = 3
 
 [profile.release]
 debug = true
-codegen-units = 1
-lto = "fat"
+codegen-units = 16
+# lto = "thin"
 
 # Release build with less LTO
 # Useful for faster builds or low-RAM environments

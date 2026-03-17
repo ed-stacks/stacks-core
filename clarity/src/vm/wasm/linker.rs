@@ -6,6 +6,7 @@ use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
 
 use crate::vm::analysis::CheckErrorKind;
 use crate::vm::callables::{DefineType, DefinedFunction};
+use crate::vm::contexts::WasmEnvironment;
 use crate::vm::costs::{constants as cost_constants, CostTracker};
 use crate::vm::database::{ClarityDatabase, STXBalance, StoreType};
 use crate::vm::errors::{RuntimeError, VmExecutionError as Error, WasmError};
@@ -16,12 +17,11 @@ use crate::vm::types::{
     TupleTypeSignature, TypeSignature,
 };
 use crate::vm::wasm::cost::CostLinker;
-use crate::vm::wasm::initialize::ClarityWasmContext;
 use crate::vm::wasm::wasm_utils::*;
 use crate::vm::{ClarityName, ClarityVersion, Environment, SymbolicExpression, Value};
 
 /// Link the host interface functions for into the Wasm module.
-pub fn link_host_functions(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+pub fn link_host_functions(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     link_define_function_fn(linker)?;
     link_define_variable_fn(linker)?;
     link_define_ft_fn(linker)?;
@@ -107,12 +107,12 @@ pub fn link_host_functions(linker: &mut Linker<ClarityWasmContext>) -> Result<()
 
 /// Link host interface function, `define_variable`, into the Wasm module.
 /// This function is called for all variable definitions (`define-data-var`).
-fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_variable_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_variable",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut value_offset: i32,
@@ -126,7 +126,7 @@ fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the variable name string from the memory
                 let name =
@@ -135,7 +135,7 @@ fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                 // Retrieve the type of this variable
                 let value_type = caller
                     .data()
-                    .contract_analysis
+                    .contract_analysis()
                     .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                     .get_persisted_variable_type(name.as_str())
                     .ok_or(Error::Unchecked(CheckErrorKind::UndefinedVariable(
@@ -161,31 +161,29 @@ fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .persisted_names
                     .insert(ClarityName::try_from(name.clone())?);
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(value_type.type_size()? as u64)
                     .map_err(Error::from)?;
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(value.size()? as u64)
                     .map_err(Error::from)?;
 
                 // Create the variable in the global context
-                let data_types = caller.data_mut().global_context.database.create_variable(
+                let data_types = caller.data_mut().database.create_variable(
                     &contract,
                     name.as_str(),
                     value_type,
                 )?;
 
                 // Store the variable in the global context
-                caller.data_mut().global_context.database.set_variable(
+                caller.data_mut().database.set_variable(
                     &contract,
                     name.as_str(),
                     value,
@@ -196,7 +194,7 @@ fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                 // Save the metadata for this variable in the contract context
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .meta_data_var
                     .insert(ClarityName::from(name.as_str()), data_types);
 
@@ -212,12 +210,12 @@ fn link_define_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
         })
 }
 
-fn link_define_ft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_ft_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_ft",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              supply_indicator: i32,
@@ -249,24 +247,23 @@ fn link_define_ft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Erro
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .persisted_names
                     .insert(cname.clone());
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::UIntType.type_size()? as u64)
                     .map_err(Error::from)?;
-                let data_type = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .create_fungible_token(&contract_identifier, &name, &total_supply)?;
+                let data_type = caller.data_mut().database.create_fungible_token(
+                    &contract_identifier,
+                    &name,
+                    &total_supply,
+                )?;
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .meta_ft
                     .insert(cname, data_type);
 
@@ -282,12 +279,12 @@ fn link_define_ft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Erro
         })
 }
 
-fn link_define_nft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_nft_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_nft",
-            |mut caller: Caller<'_, ClarityWasmContext>, name_offset: i32, name_length: i32| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>, name_offset: i32, name_length: i32| {
                 // runtime_cost(ClarityCostFunction::CreateNft, global_context, asset_type.size())?;
 
                 // Get the memory from the caller
@@ -309,33 +306,33 @@ fn link_define_nft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
                 // Get the type of this NFT from the contract analysis
                 let asset_type = caller
                     .data()
-                    .contract_analysis
+                    .contract_analysis()
                     .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                     .non_fungible_tokens
                     .get(&cname)
+                    .cloned()
                     .ok_or(Error::Unchecked(CheckErrorKind::NoSuchNFT(name.clone())))?;
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .persisted_names
                     .insert(cname.clone());
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(asset_type.type_size()? as u64)
                     .map_err(Error::from)?;
 
-                let data_type = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .create_non_fungible_token(&contract_identifier, &name, asset_type)?;
+                let data_type = caller.data_mut().database.create_non_fungible_token(
+                    &contract_identifier,
+                    &name,
+                    &asset_type,
+                )?;
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .meta_nft
                     .insert(cname, data_type);
 
@@ -351,12 +348,12 @@ fn link_define_nft_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
         })
 }
 
-fn link_define_map_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_map_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_map",
-            |mut caller: Caller<'_, ClarityWasmContext>, name_offset: i32, name_length: i32| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>, name_offset: i32, name_length: i32| {
                 // runtime_cost(
                 //     ClarityCostFunction::CreateMap,
                 //     global_context,
@@ -381,29 +378,28 @@ fn link_define_map_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
                 let (key_type, value_type) = caller
                     .data()
-                    .contract_analysis
+                    .contract_analysis()
                     .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                     .get_map_type(&name)
+                    .cloned()
                     .ok_or(Error::Unchecked(CheckErrorKind::NoSuchMap(name.clone())))?;
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .persisted_names
                     .insert(cname.clone());
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(key_type.type_size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(value_type.type_size()? as u64)
                     .map_err(Error::from)?;
 
-                let data_type = caller.data_mut().global_context.database.create_map(
+                let data_type = caller.data_mut().database.create_map(
                     &contract_identifier,
                     &name,
                     key_type.clone(),
@@ -412,7 +408,7 @@ fn link_define_map_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .meta_data_map
                     .insert(cname, data_type);
 
@@ -430,12 +426,12 @@ fn link_define_map_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
 /// Link host interface function, `define_function`, into the Wasm module.
 /// This function is called for all function definitions.
-fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_function_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_function",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              kind: i32,
              name_offset: i32,
              name_length: i32| {
@@ -456,7 +452,7 @@ fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                         DefineType::ReadOnly,
                         caller
                             .data()
-                            .contract_analysis
+                            .contract_analysis()
                             .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                             .get_read_only_function_type(&function_name)
                             .ok_or(Error::Unchecked(CheckErrorKind::UndefinedFunction(
@@ -467,7 +463,7 @@ fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                         DefineType::Public,
                         caller
                             .data()
-                            .contract_analysis
+                            .contract_analysis()
                             .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                             .get_public_function_type(&function_name)
                             .ok_or(Error::Unchecked(CheckErrorKind::UndefinedFunction(
@@ -478,7 +474,7 @@ fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                         DefineType::Private,
                         caller
                             .data()
-                            .contract_analysis
+                            .contract_analysis()
                             .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                             .get_private_function(&function_name)
                             .ok_or(Error::Unchecked(CheckErrorKind::UndefinedFunction(
@@ -516,7 +512,7 @@ fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                 // Insert this function into the context
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .functions
                     .insert(function_cname, function);
 
@@ -532,12 +528,12 @@ fn link_define_function_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
         })
 }
 
-fn link_define_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_define_trait_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "define_trait",
-            |mut caller: Caller<'_, ClarityWasmContext>, name_offset: i32, name_length: i32| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>, name_offset: i32, name_length: i32| {
                 // Get the memory from the caller
                 let memory = caller
                     .get_export("memory")
@@ -550,14 +546,15 @@ fn link_define_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
                 let trait_def = caller
                     .data()
-                    .contract_analysis
+                    .contract_analysis()
                     .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
                     .get_defined_trait(name.as_str())
+                    .cloned()
                     .ok_or(Error::Unchecked(CheckErrorKind::DefineTraitBadSignature))?;
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .defined_traits
                     .insert(cname, trait_def.clone());
 
@@ -573,12 +570,12 @@ fn link_define_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
         })
 }
 
-fn link_impl_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_impl_trait_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "impl_trait",
-            |mut caller: Caller<'_, ClarityWasmContext>, name_offset: i32, name_length: i32| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>, name_offset: i32, name_length: i32| {
                 // Get the memory from the caller
                 let memory = caller
                     .get_export("memory")
@@ -591,7 +588,7 @@ fn link_impl_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .implemented_traits
                     .insert(trait_id);
 
@@ -609,12 +606,12 @@ fn link_impl_trait_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
 /// Link host interface function, `get_variable`, into the Wasm module.
 /// This function is called for all variable lookups (`var-get`).
-fn link_get_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_get_variable_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_variable",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              return_offset: i32,
@@ -630,7 +627,7 @@ fn link_get_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     read_identifier_from_wasm(memory, &mut caller, name_offset, name_length)?;
 
                 let contract = caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the metadata for this variable
                 let data_types = caller
@@ -650,11 +647,11 @@ fn link_get_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     StoreType::Variable,
                     var_name.as_str(),
                 );
-                let fetch_result = caller.data_mut().global_context.database.get_value(
-                    &key,
-                    &data_types.value_type,
-                    &epoch,
-                )?;
+                let fetch_result =
+                    caller
+                        .data_mut()
+                        .database
+                        .get_value(&key, &data_types.value_type, &epoch)?;
 
                 // TODO: Include this cost
                 // let _result_size = match &fetch_result {
@@ -696,12 +693,12 @@ fn link_get_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
 /// Link host interface function, `set_variable`, into the Wasm module.
 /// This function is called for all variable assignments (`var-set`).
-fn link_set_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_set_variable_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "set_variable",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut value_offset: i32,
@@ -712,7 +709,7 @@ fn link_set_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the variable name for this identifier
                 let var_name =
@@ -755,7 +752,7 @@ fn link_set_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                 // env.add_memory(value.get_memory_use())?;
 
                 // Store the variable in the global context
-                caller.data_mut().global_context.database.set_variable(
+                caller.data_mut().database.set_variable(
                     &contract,
                     var_name.as_str(),
                     value,
@@ -777,12 +774,12 @@ fn link_set_variable_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
 /// Link host interface function, `tx_sender`, into the Wasm module.
 /// This function is called for use of the builtin variable, `tx-sender`.
-fn link_tx_sender_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_tx_sender_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "tx_sender",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              return_offset: i32,
              _return_length: i32| {
                 let sender = caller
@@ -820,12 +817,12 @@ fn link_tx_sender_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Erro
 
 /// Link host interface function, `contract_caller`, into the Wasm module.
 /// This function is called for use of the builtin variable, `contract-caller`.
-fn link_contract_caller_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_contract_caller_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "contract_caller",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              return_offset: i32,
              _return_length: i32| {
                 let contract_caller = caller
@@ -863,12 +860,12 @@ fn link_contract_caller_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
 
 /// Link host interface function, `tx_sponsor`, into the Wasm module.
 /// This function is called for use of the builtin variable, `tx-sponsor`.
-fn link_tx_sponsor_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_tx_sponsor_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "tx_sponsor",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              return_offset: i32,
              _return_length: i32| {
                 let opt_sponsor = caller.data().sponsor.clone();
@@ -905,17 +902,13 @@ fn link_tx_sponsor_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
 /// Link host interface function, `block_height`, into the Wasm module.
 /// This function is called for use of the builtin variable, `block-height`.
-fn link_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_block_height_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "block_height",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                let height = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_current_block_height();
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                let height = caller.data_mut().database.get_current_block_height();
                 Ok((height as i64, 0i64))
             },
         )
@@ -930,17 +923,13 @@ fn link_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
 /// Link host interface function, `stacks_block_height`, into the Wasm module.
 /// This function is called for use of the builtin variable, `stacks_block-height`.
-fn link_stacks_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stacks_block_height_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stacks_block_height",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                let height = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_current_block_height();
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                let height = caller.data_mut().database.get_current_block_height();
                 Ok((height as i64, 0i64))
             },
         )
@@ -955,17 +944,13 @@ fn link_stacks_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Resul
 
 /// Link host interface function, `tenure_height`, into the Wasm module.
 /// This function is called for use of the builtin variable, `tenure-height`.
-fn link_tenure_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_tenure_height_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "tenure_height",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                let height = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_tenure_height()?;
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                let height = caller.data_mut().database.get_tenure_height()?;
                 Ok((height as i64, 0i64))
             },
         )
@@ -981,15 +966,14 @@ fn link_tenure_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 /// Link host interface function, `burn_block_height`, into the Wasm module.
 /// This function is called for use of the builtin variable,
 /// `burn-block-height`.
-fn link_burn_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_burn_block_height_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "burn_block_height",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
                 let height = caller
                     .data_mut()
-                    .global_context
                     .database
                     .get_current_burnchain_block_height()?;
                 Ok((height as i64, 0i64))
@@ -1007,17 +991,13 @@ fn link_burn_block_height_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<
 /// Link host interface function, `stx_liquid_supply`, into the Wasm module.
 /// This function is called for use of the builtin variable,
 /// `stx-liquid-supply`.
-fn link_stx_liquid_supply_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stx_liquid_supply_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stx_liquid_supply",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                let supply = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_total_liquid_ustx()?;
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                let supply = caller.data_mut().database.get_total_liquid_ustx()?;
                 let upper = (supply >> 64) as u64;
                 let lower = supply as u64;
                 Ok((lower as i64, upper as i64))
@@ -1035,13 +1015,13 @@ fn link_stx_liquid_supply_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<
 /// Link host interface function, `is_in_regtest`, into the Wasm module.
 /// This function is called for use of the builtin variable,
 /// `is-in-regtest`.
-fn link_is_in_regtest_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_is_in_regtest_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "is_in_regtest",
-            |caller: Caller<'_, ClarityWasmContext>| {
-                if caller.data().global_context.database.is_in_regtest() {
+            |caller: Caller<'_, WasmEnvironment<'_>>| {
+                if caller.data().database.is_in_regtest() {
                     Ok(1i32)
                 } else {
                     Ok(0i32)
@@ -1060,13 +1040,13 @@ fn link_is_in_regtest_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 /// Link host interface function, `is_in_mainnet`, into the Wasm module.
 /// This function is called for use of the builtin variable,
 /// `is-in-mainnet`.
-fn link_is_in_mainnet_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_is_in_mainnet_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "is_in_mainnet",
-            |caller: Caller<'_, ClarityWasmContext>| {
-                if caller.data().global_context.mainnet {
+            |caller: Caller<'_, WasmEnvironment<'_>>| {
+                if caller.data().mainnet {
                     Ok(1i32)
                 } else {
                     Ok(0i32)
@@ -1085,13 +1065,13 @@ fn link_is_in_mainnet_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 /// Link host interface function, `chain_id`, into the Wasm module.
 /// This function is called for use of the builtin variable,
 /// `chain-id`.
-fn link_chain_id_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_chain_id_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "chain_id",
-            |caller: Caller<'_, ClarityWasmContext>| {
-                let chain_id = caller.data().global_context.chain_id;
+            |caller: Caller<'_, WasmEnvironment<'_>>| {
+                let chain_id = caller.data().chain_id;
                 Ok((chain_id as i64, 0i64))
             },
         )
@@ -1107,12 +1087,12 @@ fn link_chain_id_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 /// Link host interface function, `enter_as_contract`, into the Wasm module.
 /// This function is called before processing the inner-expression of
 /// `as-contract`.
-fn link_enter_as_contract_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_enter_as_contract_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "enter_as_contract",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
                 let contract_principal: PrincipalData = caller
                     .data()
                     .contract_context()
@@ -1135,12 +1115,12 @@ fn link_enter_as_contract_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<
 /// Link host interface function, `exit_as_contract`, into the Wasm module.
 /// This function is after before processing the inner-expression of
 /// `as-contract`, and is used to restore the caller and sender.
-fn link_exit_as_contract_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_exit_as_contract_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "exit_as_contract",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
                 caller.data_mut().pop_sender()?;
                 caller.data_mut().pop_caller()?;
                 Ok(())
@@ -1157,12 +1137,12 @@ fn link_exit_as_contract_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(
 
 /// Link host interface function, `stx_get_balance`, into the Wasm module.
 /// This function is called for the clarity expression, `stx-get-balance`.
-fn link_stx_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stx_get_balance_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stx_get_balance",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              principal_offset: i32,
              principal_length: i32| {
                 // Get the memory from the caller
@@ -1171,7 +1151,7 @@ fn link_stx_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the principal from the Wasm memory
                 let value = read_from_wasm(
@@ -1187,7 +1167,6 @@ fn link_stx_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
                 let balance = {
                     let mut snapshot = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_stx_balance_snapshot(principal)?;
                     snapshot.get_available_balance()?
@@ -1208,12 +1187,12 @@ fn link_stx_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<()
 
 /// Link host interface function, `stx_account`, into the Wasm module.
 /// This function is called for the clarity expression, `stx-account`.
-fn link_stx_account_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stx_account_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stx_account",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              principal_offset: i32,
              principal_length: i32| {
                 // Get the memory from the caller
@@ -1222,7 +1201,7 @@ fn link_stx_account_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the principal from the Wasm memory
                 let value = read_from_wasm(
@@ -1238,26 +1217,13 @@ fn link_stx_account_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
                 let account = {
                     let mut snapshot = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_stx_balance_snapshot(principal)?;
                     snapshot.canonical_balance_repr()?
                 };
-                let v1_unlock_ht = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_v1_unlock_height();
-                let v2_unlock_ht = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_v2_unlock_height()?;
-                let v3_unlock_ht = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_v3_unlock_height()?;
+                let v1_unlock_ht = caller.data_mut().database.get_v1_unlock_height();
+                let v2_unlock_ht = caller.data_mut().database.get_v2_unlock_height()?;
+                let v3_unlock_ht = caller.data_mut().database.get_v3_unlock_height()?;
 
                 let locked = account.amount_locked();
                 let locked_high = (locked >> 64) as u64;
@@ -1288,12 +1254,12 @@ fn link_stx_account_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
         })
 }
 
-fn link_stx_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stx_burn_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stx_burn",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              amount_lo: i64,
              amount_hi: i64,
              principal_offset: i32,
@@ -1306,7 +1272,7 @@ fn link_stx_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the principal from the Wasm memory
                 let value = read_from_wasm(
@@ -1334,20 +1300,15 @@ fn link_stx_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(STXBalance::unlocked_and_v1_size as u64)
                     .map_err(Error::from)?;
 
-                let mut burner_snapshot = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_stx_balance_snapshot(from)?;
+                let mut burner_snapshot =
+                    caller.data_mut().database.get_stx_balance_snapshot(from)?;
                 if !burner_snapshot.can_transfer(amount)? {
                     return Ok((0i32, 0i32, StxErrorCodes::NOT_ENOUGH_BALANCE as i64, 0i64));
                 }
@@ -1357,14 +1318,10 @@ fn link_stx_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 
                 caller
                     .data_mut()
-                    .global_context
                     .database
                     .decrement_ustx_liquid_supply(amount)?;
 
-                caller
-                    .data_mut()
-                    .global_context
-                    .log_stx_burn(from, amount)?;
+                caller.data_mut().log_stx_burn(from, amount)?;
                 caller
                     .data_mut()
                     .register_stx_burn_event(from.clone(), amount)?;
@@ -1382,12 +1339,12 @@ fn link_stx_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
         })
 }
 
-fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_stx_transfer_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "stx_transfer",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              amount_lo: i64,
              amount_hi: i64,
              sender_offset: i32,
@@ -1404,7 +1361,7 @@ fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the sender principal from the Wasm memory
                 let value = read_from_wasm(
@@ -1465,12 +1422,10 @@ fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                 // loading sender/recipient principals and balances
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 // loading sender's locked amount and height
@@ -1478,18 +1433,15 @@ fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                 // this could be optimized away, so it shouldn't penalize the caller.
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(STXBalance::unlocked_and_v1_size as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(STXBalance::unlocked_and_v1_size as u64)
                     .map_err(Error::from)?;
 
                 let mut sender_snapshot = caller
                     .data_mut()
-                    .global_context
                     .database
                     .get_stx_balance_snapshot(sender)?;
                 if !sender_snapshot.can_transfer(amount)? {
@@ -1498,10 +1450,7 @@ fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
                 sender_snapshot.transfer_to(recipient, amount)?;
 
-                caller
-                    .data_mut()
-                    .global_context
-                    .log_stx_transfer(sender, amount)?;
+                caller.data_mut().log_stx_transfer(sender, amount)?;
                 caller.data_mut().register_stx_transfer_event(
                     sender.clone(),
                     recipient.clone(),
@@ -1522,12 +1471,12 @@ fn link_stx_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
         })
 }
 
-fn link_ft_get_supply_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_ft_get_supply_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "ft_get_supply",
-            |mut caller: Caller<'_, ClarityWasmContext>, name_offset: i32, name_length: i32| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>, name_offset: i32, name_length: i32| {
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
 
@@ -1545,7 +1494,6 @@ fn link_ft_get_supply_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 
                 let supply = caller
                     .data_mut()
-                    .global_context
                     .database
                     .get_ft_supply(&contract_identifier, &token_name)?;
 
@@ -1563,12 +1511,12 @@ fn link_ft_get_supply_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
         })
 }
 
-fn link_ft_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_ft_get_balance_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "ft_get_balance",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              owner_offset: i32,
@@ -1588,7 +1536,7 @@ fn link_ft_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
 
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the owner principal from the Wasm memory
                 let value = read_from_wasm(
@@ -1609,7 +1557,7 @@ fn link_ft_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
                     .ok_or(CheckErrorKind::NoSuchFT(token_name.to_string()))?
                     .clone();
 
-                let balance = caller.data_mut().global_context.database.get_ft_balance(
+                let balance = caller.data_mut().database.get_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     owner,
@@ -1630,12 +1578,12 @@ fn link_ft_get_balance_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
         })
 }
 
-fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_ft_burn_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "ft_burn",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              amount_lo: i64,
@@ -1652,7 +1600,7 @@ fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -1682,7 +1630,7 @@ fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     ));
                 }
 
-                let burner_bal = caller.data_mut().global_context.database.get_ft_balance(
+                let burner_bal = caller.data_mut().database.get_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     burner,
@@ -1698,19 +1646,15 @@ fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     ));
                 }
 
-                caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .checked_decrease_token_supply(
-                        &contract_identifier,
-                        token_name.as_str(),
-                        amount,
-                    )?;
+                caller.data_mut().database.checked_decrease_token_supply(
+                    &contract_identifier,
+                    token_name.as_str(),
+                    amount,
+                )?;
 
                 let final_burner_bal = burner_bal - amount;
 
-                caller.data_mut().global_context.database.set_ft_balance(
+                caller.data_mut().database.set_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     burner,
@@ -1729,16 +1673,14 @@ fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::UIntType.size()? as u64)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.log_token_transfer(
+                caller.data_mut().log_token_transfer(
                     burner,
                     &contract_identifier,
                     &token_name,
@@ -1758,12 +1700,12 @@ fn link_ft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
         })
 }
 
-fn link_ft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_ft_mint_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "ft_mint",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              amount_lo: i64,
@@ -1780,7 +1722,7 @@ fn link_ft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -1818,18 +1760,14 @@ fn link_ft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     .ok_or(CheckErrorKind::NoSuchFT(token_name.to_string()))?
                     .clone();
 
-                caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .checked_increase_token_supply(
-                        &contract_identifier,
-                        token_name.as_str(),
-                        amount,
-                        &ft_info,
-                    )?;
+                caller.data_mut().database.checked_increase_token_supply(
+                    &contract_identifier,
+                    token_name.as_str(),
+                    amount,
+                    &ft_info,
+                )?;
 
-                let to_bal = caller.data_mut().global_context.database.get_ft_balance(
+                let to_bal = caller.data_mut().database.get_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     to_principal,
@@ -1842,16 +1780,14 @@ fn link_ft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::UIntType.size()? as u64)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.database.set_ft_balance(
+                caller.data_mut().database.set_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     to_principal,
@@ -1881,12 +1817,12 @@ fn link_ft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
         })
 }
 
-fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_ft_transfer_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "ft_transfer",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              amount_lo: i64,
@@ -1906,7 +1842,7 @@ fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -1964,7 +1900,7 @@ fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
                     .ok_or(CheckErrorKind::NoSuchFT(token_name.to_string()))?
                     .clone();
 
-                let from_bal = caller.data_mut().global_context.database.get_ft_balance(
+                let from_bal = caller.data_mut().database.get_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     from_principal,
@@ -1982,7 +1918,7 @@ fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
 
                 let final_from_bal = from_bal - amount;
 
-                let to_bal = caller.data_mut().global_context.database.get_ft_balance(
+                let to_bal = caller.data_mut().database.get_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     to_principal,
@@ -1995,39 +1931,35 @@ fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::UIntType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::UIntType.size()? as u64)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.database.set_ft_balance(
+                caller.data_mut().database.set_ft_balance(
                     &contract_identifier,
                     &token_name,
                     from_principal,
                     final_from_bal,
                 )?;
-                caller.data_mut().global_context.database.set_ft_balance(
+                caller.data_mut().database.set_ft_balance(
                     &contract_identifier,
                     token_name.as_str(),
                     to_principal,
                     final_to_bal,
                 )?;
 
-                caller.data_mut().global_context.log_token_transfer(
+                caller.data_mut().log_token_transfer(
                     from_principal,
                     &contract_identifier,
                     &token_name,
@@ -2058,12 +1990,12 @@ fn link_ft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
         })
 }
 
-fn link_nft_get_owner_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_nft_get_owner_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "nft_get_owner",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut asset_offset: i32,
@@ -2078,7 +2010,15 @@ fn link_nft_get_owner_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
+                // Get the type of this NFT from the contract analysis
+                let asset_type = caller
+                    .data()
+                    .contract_analysis()
+                    .ok_or(Error::Wasm(WasmError::DefineFunctionCalledInRunMode))?
+                    .non_fungible_tokens
+                    .get(&cname)
+                    .ok_or(Error::Unchecked(CheckErrorKind::NoSuchNFT(name.clone())))?;
 
                 // Retrieve the token name
                 let name =
@@ -2113,7 +2053,7 @@ fn link_nft_get_owner_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 
                 // runtime_cost(ClarityCostFunction::NftOwner, env, asset_size)?;
 
-                if !expected_asset_type.admits(&caller.data().global_context.epoch_id, &asset)? {
+                if !expected_asset_type.admits(&caller.data().epoch_id, &asset)? {
                     return Err(CheckErrorKind::TypeValueError(
                         Box::new(expected_asset_type.clone()),
                         Box::new(asset),
@@ -2121,7 +2061,7 @@ fn link_nft_get_owner_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                     .into());
                 }
 
-                match caller.data_mut().global_context.database.get_nft_owner(
+                match caller.data_mut().database.get_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2160,12 +2100,12 @@ fn link_nft_get_owner_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
         })
 }
 
-fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_nft_burn_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "nft_burn",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut asset_offset: i32,
@@ -2181,7 +2121,7 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -2227,7 +2167,7 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 
                 // runtime_cost(ClarityCostFunction::NftBurn, env, asset_size)?;
 
-                if !expected_asset_type.admits(&caller.data().global_context.epoch_id, &asset)? {
+                if !expected_asset_type.admits(&caller.data().epoch_id, &asset)? {
                     return Err(CheckErrorKind::TypeValueError(
                         Box::new(expected_asset_type.clone()),
                         Box::new(asset),
@@ -2235,7 +2175,7 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                     .into());
                 }
 
-                let owner = match caller.data_mut().global_context.database.get_nft_owner(
+                let owner = match caller.data_mut().database.get_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2254,16 +2194,14 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(asset_size)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.database.burn_nft(
+                caller.data_mut().database.burn_nft(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2271,7 +2209,7 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                     &epoch,
                 )?;
 
-                caller.data_mut().global_context.log_asset_transfer(
+                caller.data_mut().log_asset_transfer(
                     sender_principal,
                     &contract_identifier,
                     &asset_name,
@@ -2301,12 +2239,12 @@ fn link_nft_burn_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
         })
 }
 
-fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_nft_mint_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "nft_mint",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut asset_offset: i32,
@@ -2322,7 +2260,7 @@ fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -2367,7 +2305,7 @@ fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                 let asset_size = asset.serialized_size()? as u64;
                 // runtime_cost(ClarityCostFunction::NftMint, env, asset_size)?;
 
-                if !expected_asset_type.admits(&caller.data().global_context.epoch_id, &asset)? {
+                if !expected_asset_type.admits(&caller.data().epoch_id, &asset)? {
                     return Err(CheckErrorKind::TypeValueError(
                         Box::new(expected_asset_type.clone()),
                         Box::new(asset),
@@ -2375,7 +2313,7 @@ fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
                     .into());
                 }
 
-                match caller.data_mut().global_context.database.get_nft_owner(
+                match caller.data_mut().database.get_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2390,16 +2328,14 @@ fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(asset_size)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.database.set_nft_owner(
+                caller.data_mut().database.set_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2431,12 +2367,12 @@ fn link_nft_mint_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error
         })
 }
 
-fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_nft_transfer_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "nft_transfer",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut asset_offset: i32,
@@ -2454,7 +2390,7 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                 let contract_identifier =
                     caller.data().contract_context().contract_identifier.clone();
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the token name
                 let name =
@@ -2510,7 +2446,7 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                 let asset_size = asset.serialized_size()? as u64;
                 // runtime_cost(ClarityCostFunction::NftTransfer, env, asset_size)?;
 
-                if !expected_asset_type.admits(&caller.data().global_context.epoch_id, &asset)? {
+                if !expected_asset_type.admits(&caller.data().epoch_id, &asset)? {
                     return Err(CheckErrorKind::TypeValueError(
                         Box::new(expected_asset_type.clone()),
                         Box::new(asset),
@@ -2527,7 +2463,7 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     ));
                 }
 
-                let current_owner = match caller.data_mut().global_context.database.get_nft_owner(
+                let current_owner = match caller.data_mut().database.get_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2556,16 +2492,14 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(TypeSignature::PrincipalType.size()? as u64)
                     .map_err(Error::from)?;
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(asset_size)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.database.set_nft_owner(
+                caller.data_mut().database.set_nft_owner(
                     &contract_identifier,
                     asset_name.as_str(),
                     &asset,
@@ -2574,7 +2508,7 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     &epoch,
                 )?;
 
-                caller.data_mut().global_context.log_asset_transfer(
+                caller.data_mut().log_asset_transfer(
                     from_principal,
                     &contract_identifier,
                     &asset_name,
@@ -2607,12 +2541,12 @@ fn link_nft_transfer_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
 
 /// Link host interface function, `map_get`, into the Wasm module.
 /// This function is called for the `map-get?` expression.
-fn link_map_get_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_map_get_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "map_get",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut key_offset: i32,
@@ -2630,7 +2564,7 @@ fn link_map_get_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     read_identifier_from_wasm(memory, &mut caller, name_offset, name_length)?;
 
                 let contract = caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the metadata for this map
                 let data_types = caller
@@ -2655,11 +2589,13 @@ fn link_map_get_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     epoch,
                 )?;
 
-                let result = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .fetch_entry_with_size(&contract, &map_name, &key, &data_types, &epoch);
+                let result = caller.data_mut().database.fetch_entry_with_size(
+                    &contract,
+                    &map_name,
+                    &key,
+                    &data_types,
+                    &epoch,
+                );
 
                 let _result_size = match &result {
                     Ok(data) => data.serialized_byte_len,
@@ -2700,19 +2636,19 @@ fn link_map_get_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
 /// Link host interface function, `map_set`, into the Wasm module.
 /// This function is called for the `map-set` expression.
-fn link_map_set_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_map_set_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "map_set",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut key_offset: i32,
              mut key_length: i32,
              mut value_offset: i32,
              mut value_length: i32| {
-                if caller.data().global_context.is_read_only() {
+                if caller.data().is_read_only() {
                     return Err(CheckErrorKind::WriteAttemptedInReadOnly.into());
                 }
 
@@ -2722,7 +2658,7 @@ fn link_map_set_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the map name
                 let map_name =
@@ -2769,7 +2705,7 @@ fn link_map_set_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
                 )?;
 
                 // Store the value in the map in the global context
-                let result = caller.data_mut().global_context.database.set_entry(
+                let result = caller.data_mut().database.set_entry(
                     &contract,
                     map_name.as_str(),
                     key,
@@ -2787,7 +2723,6 @@ fn link_map_set_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(result_size)
                     .map_err(Error::from)?;
 
@@ -2810,19 +2745,19 @@ fn link_map_set_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error>
 
 /// Link host interface function, `map_insert`, into the Wasm module.
 /// This function is called for the `map-insert` expression.
-fn link_map_insert_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_map_insert_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "map_insert",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut key_offset: i32,
              mut key_length: i32,
              mut value_offset: i32,
              mut value_length: i32| {
-                if caller.data().global_context.is_read_only() {
+                if caller.data().is_read_only() {
                     return Err(CheckErrorKind::WriteAttemptedInReadOnly.into());
                 }
 
@@ -2832,7 +2767,7 @@ fn link_map_insert_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Retrieve the map name
                 let map_name =
@@ -2879,7 +2814,7 @@ fn link_map_insert_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
                 )?;
 
                 // Insert the value into the map
-                let result = caller.data_mut().global_context.database.insert_entry(
+                let result = caller.data_mut().database.insert_entry(
                     &contract,
                     map_name.as_str(),
                     key,
@@ -2897,7 +2832,6 @@ fn link_map_insert_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(result_size)
                     .map_err(Error::from)?;
 
@@ -2920,17 +2854,17 @@ fn link_map_insert_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
 /// Link host interface function, `map_delete`, into the Wasm module.
 /// This function is called for the `map-delete` expression.
-fn link_map_delete_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_map_delete_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "map_delete",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              mut key_offset: i32,
              mut key_length: i32| {
-                if caller.data().global_context.is_read_only() {
+                if caller.data().is_read_only() {
                     return Err(CheckErrorKind::WriteAttemptedInReadOnly.into());
                 }
 
@@ -2945,7 +2879,7 @@ fn link_map_delete_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
                     read_identifier_from_wasm(memory, &mut caller, name_offset, name_length)?;
 
                 let contract = caller.data().contract_context().contract_identifier.clone();
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 let data_types = caller
                     .data()
@@ -2972,7 +2906,7 @@ fn link_map_delete_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
                 )?;
 
                 // Delete the key from the map in the global context
-                let result = caller.data_mut().global_context.database.delete_entry(
+                let result = caller.data_mut().database.delete_entry(
                     &contract,
                     map_name.as_str(),
                     &key,
@@ -2989,7 +2923,6 @@ fn link_map_delete_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(result_size)
                     .map_err(Error::from)?;
 
@@ -3011,7 +2944,7 @@ fn link_map_delete_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 }
 
 fn check_height_valid(
-    caller: &mut Caller<'_, ClarityWasmContext>,
+    caller: &mut Caller<'_, WasmEnvironment<'_>>,
     memory: Memory,
     height_lo: i64,
     height_hi: i64,
@@ -3036,11 +2969,7 @@ fn check_height_valid(
         }
     };
 
-    let current_block_height = caller
-        .data_mut()
-        .global_context
-        .database
-        .get_current_block_height();
+    let current_block_height = caller.data_mut().database.get_current_block_height();
     if height_value >= current_block_height {
         // Write a 0 to the return buffer for `none`
         write_to_wasm(
@@ -3060,13 +2989,13 @@ fn check_height_valid(
 /// Link host interface function, `get_block_info_time`, into the Wasm module.
 /// This function is called for the `get-block-info? time` expression.
 fn link_get_block_info_time_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_time_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3079,11 +3008,7 @@ fn link_get_block_info_time_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let block_time = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_block_time(height_value)?;
+                    let block_time = caller.data_mut().database.get_block_time(height_value)?;
                     let (result, result_ty) =
                         (Value::UInt(block_time as u128), TypeSignature::UIntType);
                     let ty = TypeSignature::OptionalType(Box::new(result_ty));
@@ -3112,13 +3037,13 @@ fn link_get_block_info_time_property_fn(
 /// Link host interface function, `get_block_info_vrf_seed`, into the Wasm module.
 /// This function is called for the `get-block-info? vrf-seed` expression.
 fn link_get_block_info_vrf_seed_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_vrf_seed_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3133,7 +3058,6 @@ fn link_get_block_info_vrf_seed_property_fn(
                 {
                     let vrf_seed = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_block_vrf_seed(height_value)?;
                     let data = vrf_seed.as_bytes().to_vec();
@@ -3171,13 +3095,13 @@ fn link_get_block_info_vrf_seed_property_fn(
 /// Link host interface function, `get_block_info_header_hash`, into the Wasm module.
 /// This function is called for the `get-block-info? header-hash` expression.
 fn link_get_block_info_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3192,7 +3116,6 @@ fn link_get_block_info_header_hash_property_fn(
                 {
                     let header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_block_header_hash(height_value)?;
                     let data = header_hash.as_bytes().to_vec();
@@ -3230,13 +3153,13 @@ fn link_get_block_info_header_hash_property_fn(
 /// Link host interface function, `get_block_info_burnchain_header_hash`, into the Wasm module.
 /// This function is called for the `get-block-info? burnchain-header-hash` expression.
 fn link_get_block_info_burnchain_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_burnchain_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3251,7 +3174,6 @@ fn link_get_block_info_burnchain_header_hash_property_fn(
                 {
                     let burnchain_header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_burnchain_block_header_hash(height_value)?;
                     let data = burnchain_header_hash.as_bytes().to_vec();
@@ -3289,13 +3211,13 @@ fn link_get_block_info_burnchain_header_hash_property_fn(
 /// Link host interface function, `get_block_info_id_header_hash`, into the Wasm module.
 /// This function is called for the `get-block-info? id-header-hash` expression.
 fn link_get_block_info_identity_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_identity_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3310,7 +3232,6 @@ fn link_get_block_info_identity_header_hash_property_fn(
                 {
                     let id_header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_index_block_header_hash(height_value)?;
                     let data = id_header_hash.as_bytes().to_vec();
@@ -3348,13 +3269,13 @@ fn link_get_block_info_identity_header_hash_property_fn(
 /// Link host interface function, `get_block_info_miner_address`, into the Wasm module.
 /// This function is called for the `get-block-info? miner-address` expression.
 fn link_get_block_info_miner_address_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_miner_address_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3367,11 +3288,8 @@ fn link_get_block_info_miner_address_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let miner_address = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_miner_address(height_value)?;
+                    let miner_address =
+                        caller.data_mut().database.get_miner_address(height_value)?;
                     let (result, result_ty) =
                         (Value::from(miner_address), TypeSignature::PrincipalType);
                     let ty = TypeSignature::OptionalType(Box::new(result_ty));
@@ -3401,13 +3319,13 @@ fn link_get_block_info_miner_address_property_fn(
 /// Link host interface function, `get_block_info_miner_spend_winner`, into the Wasm module.
 /// This function is called for the `get-block-info? miner-spend-winner` expression.
 fn link_get_block_info_miner_spend_winner_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_miner_spend_winner_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3422,7 +3340,6 @@ fn link_get_block_info_miner_spend_winner_property_fn(
                 {
                     let winner_spend = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_miner_spend_winner(height_value)?;
                     let (result, result_ty) = (Value::UInt(winner_spend), TypeSignature::UIntType);
@@ -3453,13 +3370,13 @@ fn link_get_block_info_miner_spend_winner_property_fn(
 /// Link host interface function, `get_block_info_miner_spend_total`, into the Wasm module.
 /// This function is called for the `get-block-info? miner-spend-total` expression.
 fn link_get_block_info_miner_spend_total_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_miner_spend_total_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3474,7 +3391,6 @@ fn link_get_block_info_miner_spend_total_property_fn(
                 {
                     let total_spend = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_miner_spend_total(height_value)?;
                     let (result, result_ty) = (Value::UInt(total_spend), TypeSignature::UIntType);
@@ -3505,13 +3421,13 @@ fn link_get_block_info_miner_spend_total_property_fn(
 /// Link host interface function, `get_block_info_block_reward`, into the Wasm module.
 /// This function is called for the `get-block-info? block-reward` expression.
 fn link_get_block_info_block_reward_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_block_info_block_reward_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3524,11 +3440,8 @@ fn link_get_block_info_block_reward_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let block_reward_opt = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_block_reward(height_value)?;
+                    let block_reward_opt =
+                        caller.data_mut().database.get_block_reward(height_value)?;
                     let (result, result_ty) = (
                         match block_reward_opt {
                             Some(x) => Value::UInt(x),
@@ -3575,13 +3488,13 @@ fn link_get_block_info_block_reward_property_fn(
 /// Link host interface function, `get_burn_block_info_header_hash_property`, into the Wasm module.
 /// This function is called for the `get-burn-block-info? header-hash` expression.
 fn link_get_burn_block_info_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_burn_block_info_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3611,7 +3524,6 @@ fn link_get_burn_block_info_header_hash_property_fn(
                 };
                 let burnchain_header_hash_opt = caller
                     .data_mut()
-                    .global_context
                     .database
                     .get_burnchain_block_header_hash_for_burnchain_height(height_value)?;
                 let (result, result_ty) = (
@@ -3650,13 +3562,13 @@ fn link_get_burn_block_info_header_hash_property_fn(
 /// Link host interface function, `get_burn_block_info_pox_addrs_property`, into the Wasm module.
 /// This function is called for the `get-burn-block-info? pox-addrs` expression.
 fn link_get_burn_block_info_pox_addrs_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_burn_block_info_pox_addrs_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3688,7 +3600,6 @@ fn link_get_burn_block_info_pox_addrs_property_fn(
 
                 let pox_addrs_and_payout = caller
                     .data_mut()
-                    .global_context
                     .database
                     .get_pox_payout_addrs_for_burnchain_height(height_value)?;
                 let addr_ty: TypeSignature = TupleTypeSignature::try_from(vec![
@@ -3707,7 +3618,7 @@ fn link_get_burn_block_info_pox_addrs_property_fn(
                             (
                                 "addrs".into(),
                                 Value::list_with_type(
-                                    &caller.data_mut().global_context.epoch_id,
+                                    &caller.data_mut().epoch_id,
                                     addrs.into_iter().map(Value::Tuple).collect(),
                                     ListTypeData::new_list(addr_ty, 2)?,
                                 )?,
@@ -3743,13 +3654,13 @@ fn link_get_burn_block_info_pox_addrs_property_fn(
 /// Link host interface function, `get_stacks_block_info_time`, into the Wasm module.
 /// This function is called for the `get-stacks-block-info? id-header-hash` expression.
 fn link_get_stacks_block_info_time_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_stacks_block_info_time_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3762,11 +3673,7 @@ fn link_get_stacks_block_info_time_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let block_time = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_block_time(height_value)?;
+                    let block_time = caller.data_mut().database.get_block_time(height_value)?;
                     let (result, result_ty) =
                         (Value::UInt(block_time as u128), TypeSignature::UIntType);
                     let ty = TypeSignature::OptionalType(Box::new(result_ty));
@@ -3795,13 +3702,13 @@ fn link_get_stacks_block_info_time_property_fn(
 /// Link host interface function, `get_stacks_block_info_header_hash`, into the Wasm module.
 /// This function is called for the `get-stacks-block-info? header-hash` expression.
 fn link_get_stacks_block_info_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_stacks_block_info_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3817,7 +3724,6 @@ fn link_get_stacks_block_info_header_hash_property_fn(
                 {
                     let header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_block_header_hash(height_value)?;
                     let data = header_hash.as_bytes().to_vec();
@@ -3854,13 +3760,13 @@ fn link_get_stacks_block_info_header_hash_property_fn(
 /// Link host interface function, `get_stacks_block_info_identity_header_hash_`, into the Wasm module.
 /// This function is called for the `get-stacks-block-info? time` expression.
 fn link_get_stacks_block_info_identity_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_stacks_block_info_identity_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3875,7 +3781,6 @@ fn link_get_stacks_block_info_identity_header_hash_property_fn(
                 {
                     let id_header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_index_block_header_hash(height_value)?;
                     let data = id_header_hash.as_bytes().to_vec();
@@ -3913,13 +3818,13 @@ fn link_get_stacks_block_info_identity_header_hash_property_fn(
 /// Link host interface function, `get_tenure_info_burnchain_header_hash`, into the Wasm module.
 /// This function is called for the `get-tenure-info? burnchain-header-hash` expression.
 fn link_get_tenure_info_burnchain_header_hash_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_burnchain_header_hash_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3934,7 +3839,6 @@ fn link_get_tenure_info_burnchain_header_hash_property_fn(
                 {
                     let burnchain_header_hash = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_burnchain_block_header_hash(height_value)?;
                     let data = burnchain_header_hash.as_bytes().to_vec();
@@ -3972,13 +3876,13 @@ fn link_get_tenure_info_burnchain_header_hash_property_fn(
 /// Link host interface function, `get_tenure_info_miner_address`, into the Wasm module.
 /// This function is called for the `get-tenure-info? miner-address` expression.
 fn link_get_tenure_info_miner_address_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_miner_address_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -3991,11 +3895,8 @@ fn link_get_tenure_info_miner_address_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let miner_address = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_miner_address(height_value)?;
+                    let miner_address =
+                        caller.data_mut().database.get_miner_address(height_value)?;
                     let (result, result_ty) =
                         (Value::from(miner_address), TypeSignature::PrincipalType);
                     let ty = TypeSignature::OptionalType(Box::new(result_ty));
@@ -4025,13 +3926,13 @@ fn link_get_tenure_info_miner_address_property_fn(
 /// Link host interface function, `get_tenure_info_time`, into the Wasm module.
 /// This function is called for the `get-tenure-info? time` expression.
 fn link_get_tenure_info_time_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_time_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -4046,7 +3947,6 @@ fn link_get_tenure_info_time_property_fn(
                 {
                     let block_time = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_burn_block_time(height_value, None)?;
                     let (result, result_ty) =
@@ -4077,13 +3977,13 @@ fn link_get_tenure_info_time_property_fn(
 /// Link host interface function, `get_tenure_info_vrf_seed_property`, into the Wasm module.
 /// This function is called for the `get-tenure-info? vrf-seed` expression.
 fn link_get_tenure_info_vrf_seed_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_vrf_seed_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -4098,7 +3998,6 @@ fn link_get_tenure_info_vrf_seed_property_fn(
                 {
                     let vrf_seed = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_block_vrf_seed(height_value)?;
                     let data = vrf_seed.as_bytes().to_vec();
@@ -4136,13 +4035,13 @@ fn link_get_tenure_info_vrf_seed_property_fn(
 /// Link host interface function, `get_tenure_info_block_reward`, into the Wasm module.
 /// This function is called for the `get-tenure-info? block-reward` expression.
 fn link_get_tenure_info_block_reward_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_block_reward_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -4155,11 +4054,8 @@ fn link_get_tenure_info_block_reward_property_fn(
                 if let Some(height_value) =
                     check_height_valid(&mut caller, memory, height_lo, height_hi, return_offset)?
                 {
-                    let block_reward_opt = caller
-                        .data_mut()
-                        .global_context
-                        .database
-                        .get_block_reward(height_value)?;
+                    let block_reward_opt =
+                        caller.data_mut().database.get_block_reward(height_value)?;
                     let (result, result_ty) = (
                         match block_reward_opt {
                             Some(x) => Value::UInt(x),
@@ -4206,13 +4102,13 @@ fn link_get_tenure_info_block_reward_property_fn(
 /// Link host interface function, `get_tenure_info_miner_spend_total`, into the Wasm module.
 /// This function is called for the `get-tenure-info? miner-spend-total` expression.
 fn link_get_tenure_info_miner_spend_total_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_miner_spend_total_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -4227,7 +4123,6 @@ fn link_get_tenure_info_miner_spend_total_property_fn(
                 {
                     let total_spend = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_miner_spend_total(height_value)?;
                     let (result, result_ty) = (Value::UInt(total_spend), TypeSignature::UIntType);
@@ -4258,13 +4153,13 @@ fn link_get_tenure_info_miner_spend_total_property_fn(
 /// Link host interface function, `get_tenure_info_miner_spend_winner`, into the Wasm module.
 /// This function is called for the `get-tenure-info? miner-spend-winner` expression.
 fn link_get_tenure_info_miner_spend_winner_property_fn(
-    linker: &mut Linker<ClarityWasmContext>,
+    linker: &mut Linker<WasmEnvironment<'_>>,
 ) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "get_tenure_info_miner_spend_winner_property",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              height_lo: i64,
              height_hi: i64,
              return_offset: i32,
@@ -4279,7 +4174,6 @@ fn link_get_tenure_info_miner_spend_winner_property_fn(
                 {
                     let winner_spend = caller
                         .data_mut()
-                        .global_context
                         .database
                         .get_miner_spend_winner(height_value)?;
                     let (result, result_ty) = (Value::UInt(winner_spend), TypeSignature::UIntType);
@@ -4309,12 +4203,12 @@ fn link_get_tenure_info_miner_spend_winner_property_fn(
 
 /// Link host interface function, `contract_call`, into the Wasm module.
 /// This function is called for `contract-call?`s.
-fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_contract_call_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "contract_call",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              trait_id_offset: i32,
              trait_id_length: i32,
              contract_offset: i32,
@@ -4336,7 +4230,7 @@ fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the contract identifier from the Wasm memory
                 let contract_val = read_from_wasm(
@@ -4363,11 +4257,7 @@ fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                 )?;
 
                 // Retrieve the contract context for the contract we're calling
-                let mut contract = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .get_contract(contract_id)?;
+                let mut contract = caller.data_mut().database.get_contract(contract_id)?;
 
                 // Retrieve the function we're calling
                 let function = contract
@@ -4404,18 +4294,14 @@ fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                 let sender = caller.data().sender.clone();
                 let sponsor = caller.data().sponsor.clone();
 
-                let short_circuit_cost = caller
-                    .data_mut()
-                    .global_context
-                    .cost_track
-                    .short_circuit_contract_call(
-                        contract_id,
-                        &ClarityName::try_from(function_name.clone())?,
-                        &args_sizes,
-                    )?;
+                let short_circuit_cost = caller.data_mut().cost_track.short_circuit_contract_call(
+                    contract_id,
+                    &ClarityName::try_from(function_name.clone())?,
+                    &args_sizes,
+                )?;
 
                 let mut env = Environment {
-                    global_context: caller.data_mut().global_context,
+                    global_context: caller.data_mut(),
                     contract_context: &contract.contract_context,
                     call_stack: &mut call_stack,
                     sender,
@@ -4448,7 +4334,6 @@ fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                     } else {
                         caller
                             .data_mut()
-                            .global_context
                             .database
                             .get_contract(&trait_id.contract_identifier)?
                     };
@@ -4485,13 +4370,13 @@ fn link_contract_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 
 /// Link host interface function, `begin_public_call`, into the Wasm module.
 /// This function is called before a local call to a public function.
-fn link_begin_public_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_begin_public_call_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "begin_public_call",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                caller.data_mut().global_context.begin();
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                caller.data_mut().begin();
                 Ok(())
             },
         )
@@ -4506,13 +4391,13 @@ fn link_begin_public_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<
 
 /// Link host interface function, `begin_read_only_call`, into the Wasm module.
 /// This function is called before a local call to a public function.
-fn link_begin_read_only_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_begin_read_only_call_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "begin_read_only_call",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                caller.data_mut().global_context.begin_read_only();
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                caller.data_mut().begin_read_only();
                 Ok(())
             },
         )
@@ -4528,13 +4413,13 @@ fn link_begin_read_only_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Resu
 /// Link host interface function, `commit_call`, into the Wasm module.
 /// This function is called after a local call to a public function to commit
 /// it's changes into the global context.
-fn link_commit_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_commit_call_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "commit_call",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                caller.data_mut().global_context.commit()?;
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                caller.data_mut().commit()?;
                 Ok(())
             },
         )
@@ -4551,13 +4436,13 @@ fn link_commit_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Er
 /// This function is called after a local call to roll back it's changes from
 /// the global context. It is called when a public function errors, or a
 /// read-only call completes.
-fn link_roll_back_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_roll_back_call_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "roll_back_call",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
-                caller.data_mut().global_context.roll_back()?;
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
+                caller.data_mut().roll_back()?;
                 Ok(())
             },
         )
@@ -4572,12 +4457,12 @@ fn link_roll_back_call_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
 
 /// Link host interface function, `print`, into the Wasm module.
 /// This function is called for all contract print statements (`print`).
-fn link_print_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_print_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "print",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              value_offset: i32,
              _value_length: i32,
              serialized_ty_offset: i32,
@@ -4597,7 +4482,7 @@ fn link_print_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
                     serialized_ty_length,
                 )?;
 
-                let epoch = caller.data().global_context.epoch_id;
+                let epoch = caller.data().epoch_id;
                 let version = caller.data().contract_context().get_clarity_version();
 
                 let value_ty = signature_from_string(&serialized_ty, *version, epoch)?;
@@ -4616,12 +4501,12 @@ fn link_print_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
 /// Link host interface function, `enter_at_block`, into the Wasm module.
 /// This function is called before evaluating the inner expression of an
 /// `at-block` expression.
-fn link_enter_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_enter_at_block_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "enter_at_block",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              block_hash_offset: i32,
              block_hash_length: i32| {
                 // runtime_cost(ClarityCostFunction::AtBlock, env, 0)?;
@@ -4630,7 +4515,7 @@ fn link_enter_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
                     .get_export("memory")
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 let block_hash = read_from_wasm(
                     memory,
@@ -4659,17 +4544,12 @@ fn link_enter_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
 
                 caller
                     .data_mut()
-                    .global_context
                     .add_memory(cost_constants::AT_BLOCK_MEMORY)
                     .map_err(Error::from)?;
 
-                caller.data_mut().global_context.begin_read_only();
+                caller.data_mut().begin_read_only();
 
-                let prev_bhh = caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .set_block_hash(bhh, false)?;
+                let prev_bhh = caller.data_mut().database.set_block_hash(bhh, false)?;
 
                 caller.data_mut().push_at_block(prev_bhh);
 
@@ -4688,28 +4568,23 @@ fn link_enter_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(),
 /// Link host interface function, `exit_at_block`, into the Wasm module.
 /// This function is called after evaluating the inner expression of an
 /// `at-block` expression, resetting the state back to the current block.
-fn link_exit_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_exit_at_block_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "exit_at_block",
-            |mut caller: Caller<'_, ClarityWasmContext>| {
+            |mut caller: Caller<'_, WasmEnvironment<'_>>| {
                 // Pop back to the current block
                 let bhh = caller.data_mut().pop_at_block()?;
-                caller
-                    .data_mut()
-                    .global_context
-                    .database
-                    .set_block_hash(bhh, true)?;
+                caller.data_mut().database.set_block_hash(bhh, true)?;
 
                 // Roll back any changes that occurred during the `at-block`
                 // expression. This is precautionary, since only read-only
                 // operations are allowed during an `at-block` expression.
-                caller.data_mut().global_context.roll_back()?;
+                caller.data_mut().roll_back()?;
 
                 caller
                     .data_mut()
-                    .global_context
                     .drop_memory(cost_constants::AT_BLOCK_MEMORY)?;
 
                 Ok(())
@@ -4726,12 +4601,12 @@ fn link_exit_at_block_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
 
 /// Link host interface function, `keccak256`, into the Wasm module.
 /// This function is called for the Clarity expression, `keccak256`.
-fn link_keccak256_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_keccak256_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "keccak256",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              buffer_offset: i32,
              buffer_length: i32,
              return_offset: i32,
@@ -4765,12 +4640,12 @@ fn link_keccak256_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Erro
 
 /// Link host interface function, `sha512`, into the Wasm module.
 /// This function is called for the Clarity expression, `sha512`.
-fn link_sha512_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_sha512_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "sha512",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              buffer_offset: i32,
              buffer_length: i32,
              return_offset: i32,
@@ -4799,12 +4674,12 @@ fn link_sha512_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> 
 
 /// Link host interface function, `sha512_256`, into the Wasm module.
 /// This function is called for the Clarity expression, `sha512/256`.
-fn link_sha512_256_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_sha512_256_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "sha512_256",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              buffer_offset: i32,
              buffer_length: i32,
              return_offset: i32,
@@ -4838,12 +4713,12 @@ fn link_sha512_256_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Err
 
 /// Link host interface function, `secp256k1_recover`, into the Wasm module.
 /// This function is called for the Clarity expression, `secp256k1-recover?`.
-fn link_secp256k1_recover_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_secp256k1_recover_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "secp256k1_recover",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              msg_offset: i32,
              msg_length: i32,
              sig_offset: i32,
@@ -4924,12 +4799,12 @@ fn link_secp256k1_recover_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<
 
 /// Link host interface function, `secp256k1_verify`, into the Wasm module.
 /// This function is called for the Clarity expression, `secp256k1-verify`.
-fn link_secp256k1_verify_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_secp256k1_verify_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "secp256k1_verify",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              msg_offset: i32,
              msg_length: i32,
              sig_offset: i32,
@@ -4993,12 +4868,12 @@ fn link_secp256k1_verify_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(
 
 /// Link host interface function, `principal_of`, into the Wasm module.
 /// This function is called for the Clarity expression, `principal-of?`.
-fn link_principal_of_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_principal_of_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "principal_of",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              key_offset: i32,
              key_length: i32,
              principal_offset: i32| {
@@ -5010,7 +4885,7 @@ fn link_principal_of_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Read the public key from the memory
                 let key_val = read_from_wasm(
@@ -5048,7 +4923,7 @@ fn link_principal_of_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
                     let addr = if *caller.data().contract_context().get_clarity_version()
                         > ClarityVersion::Clarity1
                     {
-                        pubkey_to_address_v2(pub_key, caller.data().global_context.mainnet)?
+                        pubkey_to_address_v2(pub_key, caller.data().mainnet)?
                     } else {
                         pubkey_to_address_v1(pub_key)?
                     };
@@ -5088,12 +4963,12 @@ fn link_principal_of_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), E
         })
 }
 
-fn link_save_constant_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_save_constant_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "save_constant",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              value_offset: i32,
@@ -5103,7 +4978,7 @@ fn link_save_constant_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                     .and_then(|export| export.into_memory())
                     .ok_or(Error::Wasm(WasmError::MemoryNotFound))?;
 
-                let epoch = caller.data_mut().global_context.epoch_id;
+                let epoch = caller.data_mut().epoch_id;
 
                 // Get constant name from the memory.
                 let const_name =
@@ -5113,18 +4988,19 @@ fn link_save_constant_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
                 // Get constant value type.
                 let value_ty = caller
                     .data()
-                    .contract_analysis
+                    .contract_analysis()
                     .ok_or(Error::Wasm(WasmError::DefinesNotFound))?
                     .get_variable_type(const_name.as_str())
+                    .cloned()
                     .ok_or(Error::Wasm(WasmError::DefinesNotFound))?;
 
                 let value =
-                    read_from_wasm_indirect(memory, &mut caller, value_ty, value_offset, epoch)?;
+                    read_from_wasm_indirect(memory, &mut caller, &value_ty, value_offset, epoch)?;
 
                 // Insert constant name and expression value into a persistent data structure.
                 caller
                     .data_mut()
-                    .contract_context_mut()?
+                    .contract_context_mut()
                     .variables
                     .insert(cname, value);
 
@@ -5140,12 +5016,12 @@ fn link_save_constant_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), 
         })
 }
 
-fn link_load_constant_fn(linker: &mut Linker<ClarityWasmContext>) -> Result<(), Error> {
+fn link_load_constant_fn(linker: &mut Linker<WasmEnvironment<'_>>) -> Result<(), Error> {
     linker
         .func_wrap(
             "clarity",
             "load_constant",
-            |mut caller: Caller<'_, ClarityWasmContext>,
+            |mut caller: Caller<'_, WasmEnvironment<'_>>,
              name_offset: i32,
              name_length: i32,
              value_offset: i32,

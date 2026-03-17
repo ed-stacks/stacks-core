@@ -21,6 +21,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{fs, io};
 
+use clarity::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use clarity::vm::analysis::contract_interface_builder::build_contract_interface;
 use clarity::vm::analysis::{AnalysisDatabase, ContractAnalysis};
 use clarity::vm::ast::build_ast;
@@ -1042,7 +1043,7 @@ pub fn invoke_command(invoked_by: &str, args: &[String]) -> (i32, Option<serde_j
 pub fn invoke_command_with_db(
     invoked_by: &str,
     args: &[String],
-    analysis_db: &mut AnalysisDatabase,
+    analysis_db: &mut impl AnalysisDatabaseExt,
 ) -> (i32, Option<serde_json::Value>) {
     if args.is_empty() {
         print_usage(invoked_by);

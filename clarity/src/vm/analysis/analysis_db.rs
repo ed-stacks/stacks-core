@@ -29,21 +29,10 @@ use crate::vm::types::signatures::FunctionSignature;
 use crate::vm::types::FunctionType;
 use crate::vm::ClarityVersion;
 
-pub struct AnalysisDatabase<'a> {
-    store: RollbackWrapper<'a>,
-}
+pub trait AnalysisDatabaseExt<'a>: AsMut<RollbackWrapper<'a>> {
+    const STORAGE_KEY: &'static str = "analysis";
 
-impl<'a> AnalysisDatabase<'a> {
-    pub fn new(store: &'a mut dyn ClarityBackingStore) -> AnalysisDatabase<'a> {
-        AnalysisDatabase {
-            store: RollbackWrapper::new(store),
-        }
-    }
-    pub fn new_with_rollback_wrapper(store: RollbackWrapper<'a>) -> AnalysisDatabase<'a> {
-        AnalysisDatabase { store }
-    }
-
-    pub fn execute<F, T, E>(&mut self, f: F) -> Result<T, E>
+    fn execute<F, T, E>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Self) -> Result<T, E>,
         E: From<StaticCheckErrorKind>,
@@ -59,49 +48,45 @@ impl<'a> AnalysisDatabase<'a> {
         Ok(result)
     }
 
-    pub fn begin(&mut self) {
-        self.store.nest();
+    fn begin(&mut self) {
+        self.as_mut().nest();
     }
 
-    pub fn commit(&mut self) -> Result<(), StaticCheckError> {
-        self.store
+    fn commit(&mut self) -> Result<(), StaticCheckError> {
+        self.as_mut()
             .commit()
             .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")).into())
     }
 
-    pub fn roll_back(&mut self) -> Result<(), StaticCheckError> {
-        self.store
+    fn roll_back(&mut self) -> Result<(), StaticCheckError> {
+        self.as_mut()
             .rollback()
             .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")).into())
-    }
-
-    pub fn storage_key() -> &'static str {
-        "analysis"
     }
 
     // used by tests to ensure that
     //   the contract -> contract hash key exists in the marf
     //    even if the contract isn't published.
     #[cfg(test)]
-    pub fn test_insert_contract_hash(&mut self, contract_identifier: &QualifiedContractIdentifier) {
+    fn test_insert_contract_hash(&mut self, contract_identifier: &QualifiedContractIdentifier) {
         use stacks_common::util::hash::Sha512Trunc256Sum;
-        self.store
+        self.as_mut()
             .prepare_for_contract_metadata(contract_identifier, Sha512Trunc256Sum([0; 32]))
             .unwrap();
     }
 
-    pub fn has_contract(&mut self, contract_identifier: &QualifiedContractIdentifier) -> bool {
-        self.store
-            .has_metadata_entry(contract_identifier, AnalysisDatabase::storage_key())
+    fn has_contract(&mut self, contract_identifier: &QualifiedContractIdentifier) -> bool {
+        self.as_mut()
+            .has_metadata_entry(contract_identifier, Self::STORAGE_KEY)
     }
 
     /// Load a contract from the database, without canonicalizing its types.
-    pub fn load_contract_non_canonical(
+    fn load_contract_non_canonical(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
     ) -> Result<Option<ContractAnalysis>, StaticCheckError> {
-        self.store
-            .get_metadata(contract_identifier, AnalysisDatabase::storage_key())
+        self.as_mut()
+            .get_metadata(contract_identifier, Self::STORAGE_KEY)
             // treat NoSuchContract error thrown by get_metadata as an Option::None --
             //    the analysis will propagate that as a StaticCheckError anyways.
             .ok()
@@ -114,14 +99,14 @@ impl<'a> AnalysisDatabase<'a> {
             .transpose()
     }
 
-    pub fn load_contract(
+    fn load_contract(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         epoch: &StacksEpochId,
     ) -> Result<Option<ContractAnalysis>, StaticCheckError> {
         Ok(self
-            .store
-            .get_metadata(contract_identifier, AnalysisDatabase::storage_key())
+            .as_mut()
+            .get_metadata(contract_identifier, Self::STORAGE_KEY)
             // treat NoSuchContract error thrown by get_metadata as an Option::None --
             //    the analysis will propagate that as a StaticCheckError anyways.
             .ok()
@@ -138,26 +123,26 @@ impl<'a> AnalysisDatabase<'a> {
             }))
     }
 
-    pub fn insert_contract(
+    fn insert_contract(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         contract: &ContractAnalysis,
     ) -> Result<(), StaticCheckError> {
-        let key = AnalysisDatabase::storage_key();
-        if self.store.has_metadata_entry(contract_identifier, key) {
+        let key = Self::STORAGE_KEY;
+        if self.as_mut().has_metadata_entry(contract_identifier, key) {
             return Err(StaticCheckErrorKind::ContractAlreadyExists(
                 contract_identifier.to_string(),
             )
             .into());
         }
 
-        self.store
+        self.as_mut()
             .insert_metadata(contract_identifier, key, &contract.serialize())
             .map_err(|e| StaticCheckErrorKind::Expects(format!("{e:?}")))?;
         Ok(())
     }
 
-    pub fn get_clarity_version(
+    fn get_clarity_version(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
     ) -> Result<ClarityVersion, StaticCheckError> {
@@ -173,7 +158,7 @@ impl<'a> AnalysisDatabase<'a> {
         Ok(contract.clarity_version)
     }
 
-    pub fn get_public_function_type(
+    fn get_public_function_type(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         function_name: &str,
@@ -193,7 +178,7 @@ impl<'a> AnalysisDatabase<'a> {
             .map(|x| x.canonicalize(epoch)))
     }
 
-    pub fn get_read_only_function_type(
+    fn get_read_only_function_type(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         function_name: &str,
@@ -213,7 +198,7 @@ impl<'a> AnalysisDatabase<'a> {
             .map(|x| x.canonicalize(epoch)))
     }
 
-    pub fn get_defined_trait(
+    fn get_defined_trait(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         trait_name: &str,
@@ -236,7 +221,7 @@ impl<'a> AnalysisDatabase<'a> {
         }))
     }
 
-    pub fn get_implemented_traits(
+    fn get_implemented_traits(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
     ) -> Result<BTreeSet<TraitIdentifier>, StaticCheckError> {
@@ -247,8 +232,31 @@ impl<'a> AnalysisDatabase<'a> {
             ))?;
         Ok(contract.implemented_traits)
     }
+}
+
+impl<'a, T: AsMut<RollbackWrapper<'a>>> AnalysisDatabaseExt<'a> for T {}
+
+pub struct AnalysisDatabase<'a> {
+    store: RollbackWrapper<'a>,
+}
+
+impl<'a> AnalysisDatabase<'a> {
+    pub fn new(store: &'a mut dyn ClarityBackingStore) -> AnalysisDatabase<'a> {
+        AnalysisDatabase {
+            store: RollbackWrapper::new(store),
+        }
+    }
+    pub fn new_with_rollback_wrapper(store: RollbackWrapper<'a>) -> AnalysisDatabase<'a> {
+        AnalysisDatabase { store }
+    }
 
     pub fn destroy(self) -> RollbackWrapper<'a> {
         self.store
+    }
+}
+
+impl<'a> AsMut<RollbackWrapper<'a>> for AnalysisDatabase<'a> {
+    fn as_mut(&mut self) -> &mut RollbackWrapper<'a> {
+        &mut self.store
     }
 }

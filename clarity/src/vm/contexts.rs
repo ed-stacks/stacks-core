@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::mem::replace;
+use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
 pub use clarity_types::errors::StackTrace;
@@ -27,7 +28,7 @@ use serde_json::json;
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::StacksEpochId;
 #[cfg(feature = "clarity-wasm")]
-use wasmtime::Engine;
+use wasmtime::{Engine, Instance, Linker, Store};
 
 use super::analysis::{self, ContractAnalysis};
 use super::EvalHook;
@@ -218,6 +219,402 @@ pub enum ExecutionTimeTracker {
         start_time: Instant,
         max_duration: Duration,
     },
+}
+
+#[cfg(feature = "clarity-wasm")]
+pub struct WasmEnvironment<'a> {
+    inner: std::ptr::NonNull<WasmEnvironmentInner<'a>>,
+    store_owned: bool,
+}
+
+#[cfg(feature = "clarity-wasm")]
+pub struct WasmEnvironmentInner<'a> {
+    engine: Engine,
+
+    linker: Linker<WasmEnvironment<'a>>,
+    store: Store<WasmEnvironment<'a>>,
+
+    global: GlobalContext<'a>,
+    contracts: Vec<WasmEnvironmentContract>,
+
+    caller: Option<PrincipalData>,
+    sender: Option<PrincipalData>,
+    sponsor: Option<PrincipalData>,
+
+    bhh_stack: Vec<StacksBlockId>,
+    call_stack: CallStack,
+    caller_stack: Vec<PrincipalData>,
+    sender_stack: Vec<PrincipalData>,
+}
+
+#[cfg(feature = "clarity-wasm")]
+pub struct WasmEnvironmentContract {
+    context: ContractContext,
+    instance: Instance,
+    analysis: Option<ContractAnalysis>,
+}
+
+#[cfg(feature = "clarity-wasm")]
+impl<'a> Drop for WasmEnvironment<'a> {
+    fn drop(&mut self) {
+        if !self.store_owned {
+            let _ = unsafe { Box::from_raw(self.inner.as_ptr()) };
+        }
+    }
+}
+
+#[cfg(feature = "clarity-wasm")]
+impl<'a> Deref for WasmEnvironment<'a> {
+    type Target = GlobalContext<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner().global
+    }
+}
+
+#[cfg(feature = "clarity-wasm")]
+impl<'a> DerefMut for WasmEnvironment<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner_mut().global
+    }
+}
+
+#[cfg(feature = "clarity-wasm")]
+impl<'a> WasmEnvironment<'a> {
+    fn new(global: GlobalContext<'a>) -> Result<Self> {
+        let engine = Engine::default();
+
+        let mut linker = Linker::new(&engine);
+
+        let store = Store::new(
+            &engine,
+            Self {
+                inner: std::ptr::NonNull::dangling(),
+                store_owned: true,
+            },
+        );
+
+        crate::vm::wasm::linker::link_host_functions(&mut linker)?;
+        // TODO: cost tracking globals
+
+        let mut this = Self {
+            inner: std::ptr::NonNull::from_mut(Box::leak(Box::new(WasmEnvironmentInner {
+                engine,
+                linker,
+                store,
+                global,
+                contracts: Vec::new(),
+                caller: None,
+                sender: None,
+                sponsor: None,
+                bhh_stack: Vec::new(),
+                call_stack: CallStack::new(),
+                caller_stack: Vec::new(),
+                sender_stack: Vec::new(),
+            }))),
+            store_owned: false,
+        };
+
+        this.inner_mut().store.data_mut().inner = this.inner;
+
+        Ok(this)
+    }
+
+    pub fn call_function(
+        &mut self,
+        contract_id: QualifiedContractIdentifier,
+        fn_name: &str,
+        fn_args: &[Value],
+    ) -> Result<Value> {
+        todo!()
+    }
+
+    /// # Panics:
+    /// If called outside of the context of a `call_function`
+    pub fn contract_context(&self) -> &ContractContext {
+        &self
+            .inner()
+            .contracts
+            .last()
+            .expect("Called outside of the context of `call_function`")
+            .context
+    }
+
+    /// # Panics:
+    /// If called outside of the context of a `call_function`
+    pub fn contract_context_mut(&mut self) -> &mut ContractContext {
+        &mut self
+            .inner_mut()
+            .contracts
+            .last_mut()
+            .expect("Called outside of the context of `call_function`")
+            .context
+    }
+
+    /// # Panics:
+    /// If called outside of the context of a `call_function`
+    pub fn contract_analysis_mut(&mut self) -> Result<&mut ContractAnalysis> {
+        use crate::vm::analysis::{run_analysis, AnalysisDatabase};
+        use crate::vm::ast::build_ast;
+
+        let inner = self.inner_mut();
+
+        let contract = inner
+            .contracts
+            .last_mut()
+            .expect("Called outside of the context of `call_function`");
+
+        if let Some(analysis) = contract.analysis.as_mut() {
+            return Ok(analysis);
+        }
+
+        let contract_src = inner
+            .global
+            .database
+            .get_contract_src(&contract.context.contract_identifier)
+            .expect("Contract source not available for contract in MARF");
+
+        let contract_ast = build_ast(
+            &contract.context.contract_identifier,
+            &contract_src,
+            &mut LimitedCostTracker::new_free(),
+            contract.context.clarity_version,
+            inner.global.epoch_id,
+        )?;
+
+        AnalysisDatabase::new(&mut inner.global.database);
+
+        run_analysis(
+            &contract.context.contract_identifier,
+            &contract_ast.expressions,
+            analysis_db,
+            save_contract,
+            cost_tracker,
+            epoch,
+            version,
+            build_type_map,
+        );
+
+        todo!()
+    }
+
+    pub fn push_sender(&mut self, sender: PrincipalData) {
+        if let Some(current) = self.inner_mut().sender.take() {
+            self.inner_mut().sender_stack.push(current);
+        }
+        self.inner_mut().sender = Some(sender);
+    }
+
+    pub fn pop_sender(&mut self) -> Result<PrincipalData> {
+        self.inner_mut()
+            .sender
+            .take()
+            .ok_or(RuntimeError::NoSenderInContext.into())
+            .inspect(|_| {
+                self.inner_mut().sender = self.inner_mut().sender_stack.pop();
+            })
+    }
+
+    pub fn push_caller(&mut self, caller: PrincipalData) {
+        if let Some(current) = self.inner_mut().caller.take() {
+            self.inner_mut().caller_stack.push(current);
+        }
+        self.inner_mut().caller = Some(caller);
+    }
+
+    pub fn pop_caller(&mut self) -> Result<PrincipalData> {
+        self.inner_mut()
+            .caller
+            .take()
+            .ok_or(RuntimeError::NoCallerInContext.into())
+            .inspect(|_| {
+                self.inner_mut().caller = self.inner_mut().caller_stack.pop();
+            })
+    }
+
+    pub fn push_at_block(&mut self, bhh: StacksBlockId) {
+        self.inner_mut().bhh_stack.push(bhh);
+    }
+
+    pub fn pop_at_block(&mut self) -> Result<StacksBlockId> {
+        self.inner_mut()
+            .bhh_stack
+            .pop()
+            .ok_or(crate::vm::VmExecutionError::Wasm(
+                clarity_types::errors::WasmError::WasmGeneratorError(
+                    "Could not pop at_block".to_string(),
+                ),
+            ))
+    }
+
+    pub fn push_to_event_batch(&mut self, event: StacksTransactionEvent) {
+        if let Some(batch) = self.event_batches.last_mut() {
+            batch.0.events.push(event);
+        }
+    }
+
+    pub fn construct_print_transaction_event(
+        contract_id: &QualifiedContractIdentifier,
+        value: &Value,
+    ) -> StacksTransactionEvent {
+        let print_event = SmartContractEventData {
+            key: (contract_id.clone(), "print".to_string()),
+            value: value.clone(),
+        };
+
+        StacksTransactionEvent::SmartContractEvent(print_event)
+    }
+
+    pub fn register_print_event(&mut self, value: Value) -> Result<()> {
+        let event = Self::construct_print_transaction_event(
+            &self.contract_context().contract_identifier,
+            &value,
+        );
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_stx_transfer_event(
+        &mut self,
+        sender: PrincipalData,
+        recipient: PrincipalData,
+        amount: u128,
+        memo: BuffData,
+    ) -> Result<()> {
+        let event_data = STXTransferEventData {
+            sender,
+            recipient,
+            amount,
+            memo,
+        };
+        let event = StacksTransactionEvent::STXEvent(STXEventType::STXTransferEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_stx_burn_event(&mut self, sender: PrincipalData, amount: u128) -> Result<()> {
+        let event_data = STXBurnEventData { sender, amount };
+        let event = StacksTransactionEvent::STXEvent(STXEventType::STXBurnEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_nft_transfer_event(
+        &mut self,
+        sender: PrincipalData,
+        recipient: PrincipalData,
+        value: Value,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = NFTTransferEventData {
+            sender,
+            recipient,
+            asset_identifier,
+            value,
+        };
+        let event = StacksTransactionEvent::NFTEvent(NFTEventType::NFTTransferEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_nft_mint_event(
+        &mut self,
+        recipient: PrincipalData,
+        value: Value,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = NFTMintEventData {
+            recipient,
+            asset_identifier,
+            value,
+        };
+        let event = StacksTransactionEvent::NFTEvent(NFTEventType::NFTMintEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_nft_burn_event(
+        &mut self,
+        sender: PrincipalData,
+        value: Value,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = NFTBurnEventData {
+            sender,
+            asset_identifier,
+            value,
+        };
+        let event = StacksTransactionEvent::NFTEvent(NFTEventType::NFTBurnEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_ft_transfer_event(
+        &mut self,
+        sender: PrincipalData,
+        recipient: PrincipalData,
+        amount: u128,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = FTTransferEventData {
+            sender,
+            recipient,
+            asset_identifier,
+            amount,
+        };
+        let event = StacksTransactionEvent::FTEvent(FTEventType::FTTransferEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_ft_mint_event(
+        &mut self,
+        recipient: PrincipalData,
+        amount: u128,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = FTMintEventData {
+            recipient,
+            asset_identifier,
+            amount,
+        };
+        let event = StacksTransactionEvent::FTEvent(FTEventType::FTMintEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    pub fn register_ft_burn_event(
+        &mut self,
+        sender: PrincipalData,
+        amount: u128,
+        asset_identifier: AssetIdentifier,
+    ) -> Result<()> {
+        let event_data = FTBurnEventData {
+            sender,
+            asset_identifier,
+            amount,
+        };
+        let event = StacksTransactionEvent::FTEvent(FTEventType::FTBurnEvent(event_data));
+
+        self.push_to_event_batch(event);
+        Ok(())
+    }
+
+    fn inner(&self) -> &WasmEnvironmentInner<'a> {
+        unsafe { self.inner.as_ref() }
+    }
+
+    fn inner_mut(&mut self) -> &mut WasmEnvironmentInner<'a> {
+        unsafe { self.inner.as_mut() }
+    }
 }
 
 /** GlobalContext represents the outermost context for a single transaction's
@@ -1394,114 +1791,171 @@ impl<'a, 'b> Environment<'a, 'b> {
             self.global_context.begin();
         }
 
-        let mut next_contract_context = next_contract_context
-            .cloned()
-            .unwrap_or(self.contract_context.clone());
-
-        let result = {
-            #[cfg(feature = "clarity-wasm")]
+        let result =
             {
-                use clarity_types::diagnostic::DiagnosableError;
-                use clarity_types::errors::WasmError;
+                #[cfg(feature = "clarity-wasm")]
+                {
+                    use clarity_types::diagnostic::DiagnosableError;
+                    use clarity_types::errors::{StaticCheckErrorKind, WasmError};
 
-                use crate::vm::analysis::{run_analysis, AnalysisDatabase};
-                use crate::vm::ast::build_ast;
-                use crate::vm::database::MemoryBackingStore;
-                use crate::vm::wasm::compile_contract;
-                use crate::vm::wasm::initialize::initialize_contract;
-                use crate::vm::wasm::utils;
+                    use crate::vm::analysis::{run_analysis, AnalysisDatabase};
+                    use crate::vm::ast::build_ast;
+                    use crate::vm::database::MemoryBackingStore;
+                    use crate::vm::wasm::compile_contract;
+                    use crate::vm::wasm::initialize::initialize_contract;
+                    use crate::vm::wasm::utils;
 
-                // NOTE: If there is no compiled contract, but we compile anyway
-                //       This is only ok in the context of the replay tool, otherwise it is far too
-                //       expensive
-                if next_contract_context.wasm_module.is_none() {
-                    let contract_src = self
-                        .global_context
-                        .database
-                        .get_contract_src(&next_contract_context.contract_identifier)
-                        .expect("Contract source not available for contract in MARF");
+                    struct CompileStackElem {
+                        id: QualifiedContractIdentifier,
+                        src: String,
+                        ctx: ContractContext,
+                    }
 
-                    let contract_ast_res = build_ast(
-                        &next_contract_context.contract_identifier,
-                        &contract_src,
-                        &mut LimitedCostTracker::new_free(),
-                        next_contract_context.clarity_version,
-                        self.global_context.epoch_id,
-                    );
+                    println!("Help 1");
 
                     let mut clarity_store = MemoryBackingStore::new();
                     let mut analysis_db = AnalysisDatabase::new(&mut clarity_store);
 
-                    // FIXME: trait dependencies are not resolved, resulting in an analysis failure
-                    //        - returning `NoSuchContract(_)` error
+                    let ctx = next_contract_context
+                        .cloned()
+                        .unwrap_or(self.contract_context.clone());
 
-                    let contract_analysis_res = run_analysis(
-                        &next_contract_context.contract_identifier,
-                        &contract_ast_res?.expressions,
-                        &mut analysis_db,
-                        false,
-                        LimitedCostTracker::new_free(),
-                        self.global_context.epoch_id,
-                        next_contract_context.clarity_version,
-                        true,
-                    )
-                    .map_err(|err| {
-                        VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.0.to_string()))
-                    });
+                    let mut compile_stack = vec![CompileStackElem {
+                        id: ctx.contract_identifier.clone(),
+                        src: self
+                            .global_context
+                            .database
+                            .get_contract_src(&ctx.contract_identifier)
+                            .expect("Contract source not available for contract in MARF"),
+                        ctx,
+                    }];
 
-                    let mut contract_analysis = contract_analysis_res?;
+                    println!("Help 2");
 
-                    utils::concretize(&mut contract_analysis).map_err(|err| {
-                        VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
-                    })?;
+                    // NOTE: There could be a compiled contract already, but we compile anyway
+                    //       This is only ok in the context of the replay tool, otherwise it is far too
+                    //       expensive
 
-                    let mut module =
-                        compile_contract(contract_analysis.clone()).map_err(|err| {
+                    while let Some(elem) = compile_stack.pop() {
+                        println!(
+                            "Stack height: {}, Compiling contract: {}",
+                            compile_stack.len(),
+                            elem.id
+                        );
+
+                        println!("Help 3");
+
+                        let contract_ast = build_ast(
+                            &elem.id,
+                            &elem.src,
+                            &mut limitedcosttracker::new_free(),
+                            elem.ctx.clarity_version,
+                            self.global_context.epoch_id,
+                        )?;
+
+                        println!("Help 4");
+                        let mut contract_analysis =
+                            match run_analysis(
+                                &elem.id,
+                                &contract_ast.expressions,
+                                &mut analysis_db,
+                                true,
+                                LimitedCostTracker::new_free(),
+                                self.global_context.epoch_id,
+                                elem.ctx.clarity_version,
+                                true,
+                            ) {
+                                Ok(analysis) => analysis,
+                                Err(err) => match err.0.err.as_ref() {
+                                    StaticCheckErrorKind::NoSuchContract(id) => {
+                                        let id = QualifiedContractIdentifier::parse(id)
+                                            .expect("Invalid contract in `NoSuchContract(_)`");
+
+                                        compile_stack.push(elem);
+
+                                        compile_stack.push(CompileStackElem {
+                                    id: id.clone(),
+                                    src: self.global_context.database.get_contract_src(&id).expect(
+                                        "Contract source not available for contract in MARF",
+                                    ),
+                                    ctx: self.global_context.database.get_contract(&id).map_err(
+                                        |err| {
+                                            VmExecutionError::Wasm(WasmError::WasmGeneratorError(
+                                                err.to_string(),
+                                            ))
+                                        },
+                                    )?.contract_context,
+                                });
+
+                                        continue;
+                                    }
+                                    _ => {
+                                        return Err(VmExecutionError::Wasm(
+                                            WasmError::WasmGeneratorError(err.0.to_string()),
+                                        ))
+                                    }
+                                },
+                            };
+
+                        println!("Help 5");
+
+                        utils::concretize(&mut contract_analysis).map_err(|err| {
                             VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
                         })?;
 
-                    next_contract_context.wasm_module = Some(module.emit_wasm());
+                        println!("Help 6");
 
-                    self.global_context.roll_back()?;
+                        let mut module =
+                            compile_contract(contract_analysis.clone()).map_err(|err| {
+                                VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
+                            })?;
 
-                    initialize_contract(
-                        &mut self.global_context,
-                        &mut next_contract_context,
-                        None,
-                        &contract_analysis,
-                    )?;
+                        println!("Help 7");
+
+                        initialize_contract(
+                            &mut self.global_context,
+                            &mut elem.ctx,
+                            None,
+                            &contract_analysis,
+                        )?;
+
+                        println!("Help 8");
+                    }
+
+                    self.global_context.commit()?;
 
                     if make_read_only {
                         self.global_context.begin_read_only();
                     } else {
                         self.global_context.begin();
                     }
-                }
 
-                call_function(
-                    &function.get_name(),
-                    args,
-                    &mut self.global_context,
-                    &next_contract_context,
-                    self.call_stack,
-                    self.sender.clone(),
-                    self.caller.clone(),
-                    self.sponsor.clone(),
-                )
-            }
-            #[cfg(not(feature = "clarity-wasm"))]
-            {
-                let mut nested_env = Environment::new(
-                    &mut self.global_context,
-                    next_contract_context,
-                    self.call_stack,
-                    self.sender.clone(),
-                    self.caller.clone(),
-                    self.sponsor.clone(),
-                );
-                function.execute_apply(args, &mut nested_env)
-            }
-        };
+                    println!("Help 9");
+
+                    call_function(
+                        &function.get_name(),
+                        args,
+                        &mut self.global_context,
+                        &elem.ctx,
+                        self.call_stack,
+                        self.sender.clone(),
+                        self.caller.clone(),
+                        self.sponsor.clone(),
+                    )
+                }
+                #[cfg(not(feature = "clarity-wasm"))]
+                {
+                    let mut nested_env = Environment::new(
+                        &mut self.global_context,
+                        next_contract_context,
+                        self.call_stack,
+                        self.sender.clone(),
+                        self.caller.clone(),
+                        self.sponsor.clone(),
+                    );
+                    function.execute_apply(args, &mut nested_env)
+                }
+            };
 
         if make_read_only {
             self.global_context.roll_back()?;
