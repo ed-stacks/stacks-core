@@ -4,7 +4,7 @@ use stacks_common::util::hash::{Keccak256Hash, Sha512Sum, Sha512Trunc256Sum};
 use stacks_common::util::secp256k1::{secp256k1_recover, secp256k1_verify, Secp256k1PublicKey};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
 
-use crate::vm::analysis::{CheckErrorKind, StaticCheckErrorKind};
+use crate::vm::analysis::CheckErrorKind;
 use crate::vm::callables::{DefineType, DefinedFunction};
 use crate::vm::costs::{constants as cost_constants, CostTracker};
 use crate::vm::database::{ClarityDatabase, STXBalance, StoreType};

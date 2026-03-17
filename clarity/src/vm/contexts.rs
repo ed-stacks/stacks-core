@@ -17,7 +17,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::mem::replace;
-use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
 pub use clarity_types::errors::StackTrace;
@@ -28,7 +27,7 @@ use serde_json::json;
 use stacks_common::types::chainstate::StacksBlockId;
 use stacks_common::types::StacksEpochId;
 #[cfg(feature = "clarity-wasm")]
-use wasmtime::{Engine, Instance, Linker, Store};
+use wasmtime::Engine;
 
 use super::analysis::{self, ContractAnalysis};
 use super::EvalHook;
@@ -50,7 +49,6 @@ use crate::vm::types::{
     TraitIdentifier, TypeSignature, Value,
 };
 use crate::vm::version::ClarityVersion;
-use crate::vm::wasm::datastore::Datastore;
 #[cfg(feature = "clarity-wasm")]
 use crate::vm::wasm::wasm_utils::call_function;
 use crate::vm::{ast, eval, is_reserved, stx_transfer_consolidated};
@@ -243,8 +241,6 @@ pub struct GlobalContext<'a> {
     pub execution_time_tracker: ExecutionTimeTracker,
     #[cfg(feature = "clarity-wasm")]
     pub engine: Engine,
-    #[cfg(feature = "clarity-wasm")]
-    datastore: Datastore,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1398,157 +1394,63 @@ impl<'a, 'b> Environment<'a, 'b> {
             self.global_context.begin();
         }
 
-        let result =
+        let result = {
+            #[cfg(feature = "clarity-wasm")]
             {
-                #[cfg(feature = "clarity-wasm")]
-                {
-                    use clarity_types::diagnostic::DiagnosableError;
-                    use clarity_types::errors::{StaticCheckErrorKind, WasmError};
+                use crate::vm::wasm::compile;
+                use clarity_types::errors::WasmError;
 
-                    use crate::vm::analysis::run_analysis;
-                    use crate::vm::ast::build_ast;
-                    use crate::vm::wasm::compile_contract;
-                    use crate::vm::wasm::utils;
+                let mut contract_context = next_contract_context
+                    .cloned()
+                    .unwrap_or(self.contract_context.clone());
 
-                    struct CompileStackElem {
-                        id: QualifiedContractIdentifier,
-                        src: String,
-                        ctx: ContractContext,
-                    }
+                let contract_source = self
+                    .global_context
+                    .database
+                    .get_contract_src(&contract_context.contract_identifier)
+                    .expect("Existing contract has no source in MARF");
 
-                    println!("Help 1");
+                let emit_cost_code = false;
 
-                    let ctx = next_contract_context
-                        .cloned()
-                        .unwrap_or(self.contract_context.clone());
+                let mut compile_result = compile(
+                    &contract_source,
+                    &contract_context.contract_identifier,
+                    LimitedCostTracker::Free,
+                    contract_context.clarity_version,
+                    self.global_context.epoch_id,
+                    &mut self.global_context.database,
+                    emit_cost_code,
+                )
+                .map_err(|err| {
+                    VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.to_string()))
+                })?;
 
-                    let mut popped = None;
+                contract_context.set_wasm_module(compile_result.module.emit_wasm());
 
-                    let mut compile_stack = vec![CompileStackElem {
-                        id: ctx.contract_identifier.clone(),
-                        src: self
-                            .global_context
-                            .database
-                            .get_contract_src(&ctx.contract_identifier)
-                            .expect("Contract source not available for contract in MARF"),
-                        ctx,
-                    }];
-
-                    println!("Help 2");
-
-                    // NOTE: There could be a compiled contract already, but we compile anyway
-                    //       This is only ok in the context of the replay tool, otherwise it is far too
-                    //       expensive
-
-                    while let Some(elem) = compile_stack.pop() {
-                        println!(
-                            "Stack height: {}, Compiling contract: {}",
-                            compile_stack.len(),
-                            elem.id
-                        );
-
-                        println!("Help 3");
-
-                        let contract_ast = build_ast(
-                            &elem.id,
-                            &elem.src,
-                            &mut LimitedCostTracker::new_free(),
-                            elem.ctx.clarity_version,
-                            self.global_context.epoch_id,
-                        )?;
-
-                        println!("Help 4");
-                        let mut contract_analysis =
-                            match run_analysis(
-                                &elem.id,
-                                &contract_ast.expressions,
-                                &mut self.global_context.datastore.as_analysis_db(),
-                                true,
-                                LimitedCostTracker::new_free(),
-                                self.global_context.epoch_id,
-                                elem.ctx.clarity_version,
-                                true,
-                            ) {
-                                Ok(analysis) => analysis,
-                                Err(err) => match err.0.err.as_ref() {
-                                    StaticCheckErrorKind::NoSuchContract(id) => {
-                                        let id = QualifiedContractIdentifier::parse(id)
-                                            .expect("Invalid contract in `NoSuchContract(_)`");
-
-                                        compile_stack.push(elem);
-
-                                        compile_stack.push(CompileStackElem {
-                                    id: id.clone(),
-                                    src: self.global_context.database.get_contract_src(&id).expect(
-                                        "Contract source not available for contract in MARF",
-                                    ),
-                                    ctx: self.global_context.database.get_contract(&id).map_err(
-                                        |err| {
-                                            VmExecutionError::Wasm(WasmError::WasmGeneratorError(
-                                                err.to_string(),
-                                            ))
-                                        },
-                                    )?.contract_context,
-                                });
-
-                                        continue;
-                                    }
-                                    _ => {
-                                        return Err(VmExecutionError::Wasm(
-                                            WasmError::WasmGeneratorError(err.0.to_string()),
-                                        ))
-                                    }
-                                },
-                            };
-
-                        println!("Help 5");
-
-                        utils::concretize(&mut contract_analysis).map_err(|err| {
-                            VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
-                        })?;
-
-                        println!("Help 6");
-
-                        let mut module =
-                            compile_contract(contract_analysis.clone()).map_err(|err| {
-                                VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.message()))
-                            })?;
-                    }
-
-                    self.global_context.commit()?;
-
-                    if make_read_only {
-                        self.global_context.begin_read_only();
-                    } else {
-                        self.global_context.begin();
-                    }
-
-                    println!("Help 9");
-
-                    call_function(
-                        &function.get_name(),
-                        args,
-                        &mut self.global_context,
-                        &elem.ctx,
-                        self.call_stack,
-                        self.sender.clone(),
-                        self.caller.clone(),
-                        self.sponsor.clone(),
-                    )
-                }
-                #[cfg(not(feature = "clarity-wasm"))]
-                {
-                    let mut nested_env = Environment::new(
-                        &mut self.global_context,
-                        next_contract_context,
-                        self.call_stack,
-                        self.sender.clone(),
-                        self.caller.clone(),
-                        self.sponsor.clone(),
-                    );
-                    function.execute_apply(args, &mut nested_env)
-                }
-            };
+                call_function(
+                    &function.get_name(),
+                    args,
+                    &mut self.global_context,
+                    &contract_context,
+                    self.call_stack,
+                    self.sender.clone(),
+                    self.caller.clone(),
+                    self.sponsor.clone(),
+                )
+            }
+            #[cfg(not(feature = "clarity-wasm"))]
+            {
+                let mut nested_env = Environment::new(
+                    &mut self.global_context,
+                    next_contract_context,
+                    self.call_stack,
+                    self.sender.clone(),
+                    self.caller.clone(),
+                    self.sponsor.clone(),
+                );
+                function.execute_apply(args, &mut nested_env)
+            }
+        };
 
         if make_read_only {
             self.global_context.roll_back()?;
@@ -1599,6 +1501,7 @@ impl<'a, 'b> Environment<'a, 'b> {
         contract_content: &str,
     ) -> Result<(), VmExecutionError> {
         let mut store = crate::vm::database::MemoryBackingStore::new();
+
         let mut analysis_db = store.as_analysis_db();
         analysis_db.begin();
 
@@ -1997,8 +1900,6 @@ impl<'a> GlobalContext<'a> {
             execution_time_tracker: ExecutionTimeTracker::NoTracking,
             #[cfg(feature = "clarity-wasm")]
             engine,
-            #[cfg(feature = "clarity-wasm")]
-            datastore: Datastore::new(),
         }
     }
 

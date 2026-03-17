@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::ops::{Deref, DerefMut};
+
 use stacks_common::consts::{
     BITCOIN_REGTEST_FIRST_BLOCK_HASH, BITCOIN_REGTEST_FIRST_BLOCK_HEIGHT,
     BITCOIN_REGTEST_FIRST_BLOCK_TIMESTAMP, FIRST_BURNCHAIN_CONSENSUS_HASH, FIRST_STACKS_BLOCK_HASH,
@@ -133,9 +135,23 @@ impl TryFrom<&str> for ContractDataVarName {
 }
 
 pub struct ClarityDatabase<'a> {
-    pub store: RollbackWrapper<'a>,
+    analysis_db: AnalysisDatabase<'a>,
     headers_db: &'a dyn HeadersDB,
     burn_state_db: &'a dyn BurnStateDB,
+}
+
+impl<'a> Deref for ClarityDatabase<'a> {
+    type Target = AnalysisDatabase<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.analysis_db
+    }
+}
+
+impl<'a> DerefMut for ClarityDatabase<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.analysis_db
+    }
 }
 
 pub trait HeadersDB {
@@ -446,7 +462,7 @@ impl<'a> ClarityDatabase<'a> {
         burn_state_db: &'a dyn BurnStateDB,
     ) -> ClarityDatabase<'a> {
         ClarityDatabase {
-            store: RollbackWrapper::new(store),
+            analysis_db: AnalysisDatabase::new(store),
             headers_db,
             burn_state_db,
         }
@@ -458,7 +474,7 @@ impl<'a> ClarityDatabase<'a> {
         burn_state_db: &'a dyn BurnStateDB,
     ) -> ClarityDatabase<'a> {
         ClarityDatabase {
-            store,
+            analysis_db: AnalysisDatabase::new_with_rollback_wrapper(store),
             headers_db,
             burn_state_db,
         }
@@ -704,7 +720,7 @@ impl<'a> ClarityDatabase<'a> {
         }
     }
 
-    fn fetch_metadata<T>(
+    pub fn fetch_metadata<T>(
         &mut self,
         contract_identifier: &QualifiedContractIdentifier,
         key: &str,
@@ -989,7 +1005,7 @@ impl<'a> ClarityDatabase<'a> {
     }
 
     pub fn destroy(self) -> RollbackWrapper<'a> {
-        self.store
+        self.analysis_db.destroy()
     }
 
     pub fn is_in_regtest(&self) -> bool {

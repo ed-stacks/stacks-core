@@ -1,3 +1,5 @@
+use std::fmt;
+
 pub use walrus::Module;
 use wasm_generator::{GeneratorError, WasmGenerator};
 
@@ -56,6 +58,20 @@ pub enum CompileError {
         diagnostics: Vec<Diagnostic>,
         cost_tracker: Box<LimitedCostTracker>,
     },
+}
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompileError::Generic { diagnostics, .. } => {
+                for d in diagnostics {
+                    write!(f, "{};", d.message)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 pub fn compile(

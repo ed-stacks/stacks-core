@@ -30,7 +30,7 @@ use crate::vm::types::FunctionType;
 use crate::vm::ClarityVersion;
 
 pub struct AnalysisDatabase<'a> {
-    store: RollbackWrapper<'a>,
+    pub(crate) store: RollbackWrapper<'a>,
 }
 
 impl<'a> AnalysisDatabase<'a> {
