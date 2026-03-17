@@ -28,7 +28,6 @@ use stacks_common::util::hash::{to_hex, Hash160, Sha512Trunc256Sum};
 
 use super::clarity_store::SpecialCaseHandler;
 pub use super::key_value_wrapper::ValueResult;
-use crate::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use crate::vm::analysis::{AnalysisDatabase, ContractAnalysis};
 use crate::vm::contracts::Contract;
 use crate::vm::costs::{CostOverflowingMath, ExecutionCost};
@@ -137,12 +136,6 @@ pub struct ClarityDatabase<'a> {
     pub store: RollbackWrapper<'a>,
     headers_db: &'a dyn HeadersDB,
     burn_state_db: &'a dyn BurnStateDB,
-}
-
-impl<'a> AsMut<RollbackWrapper<'a>> for ClarityDatabase<'a> {
-    fn as_mut(&mut self) -> &mut RollbackWrapper<'a> {
-        &mut self.store
-    }
 }
 
 pub trait HeadersDB {

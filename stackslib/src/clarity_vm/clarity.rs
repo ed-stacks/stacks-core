@@ -18,7 +18,6 @@ use std::thread;
 
 #[cfg(test)]
 use clarity::consts::CHAIN_ID_TESTNET;
-use clarity::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use clarity::vm::analysis::AnalysisDatabase;
 use clarity::vm::clarity::TransactionConnection;
 pub use clarity::vm::clarity::{ClarityConnection, ClarityError};
@@ -836,7 +835,7 @@ impl ClarityConnection for ClarityBlockConnection<'_, '_> {
 
     fn with_analysis_db_readonly<F, R>(&mut self, to_do: F) -> R
     where
-        F: FnOnce(&mut impl AnalysisDatabaseExt) -> R,
+        F: FnOnce(&mut AnalysisDatabase) -> R,
     {
         let mut db = AnalysisDatabase::new(&mut self.datastore);
         db.begin();

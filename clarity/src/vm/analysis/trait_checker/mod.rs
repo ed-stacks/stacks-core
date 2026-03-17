@@ -15,7 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 use stacks_common::types::StacksEpochId;
 
-use crate::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use crate::vm::analysis::errors::{StaticCheckError, StaticCheckErrorKind};
 use crate::vm::analysis::types::{AnalysisPass, ContractAnalysis};
 use crate::vm::analysis::AnalysisDatabase;
@@ -28,7 +27,7 @@ impl AnalysisPass for TraitChecker {
     fn run_pass(
         epoch: &StacksEpochId,
         contract_analysis: &mut ContractAnalysis,
-        analysis_db: &mut impl AnalysisDatabaseExt,
+        analysis_db: &mut AnalysisDatabase,
     ) -> Result<(), StaticCheckError> {
         let mut command = TraitChecker::new(epoch);
         command.run(contract_analysis, analysis_db)?;
@@ -44,7 +43,7 @@ impl TraitChecker {
     pub fn run(
         &mut self,
         contract_analysis: &ContractAnalysis,
-        analysis_db: &mut AnalysisDatabaseExt,
+        analysis_db: &mut AnalysisDatabase,
     ) -> Result<(), StaticCheckError> {
         for trait_identifier in &contract_analysis.implemented_traits {
             let trait_name = trait_identifier.name.to_string();

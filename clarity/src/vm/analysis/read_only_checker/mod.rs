@@ -25,7 +25,6 @@ pub use super::errors::{
     StaticCheckErrorKind, SyntaxBindingError,
 };
 use super::AnalysisDatabase;
-use crate::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use crate::vm::analysis::types::{AnalysisPass, ContractAnalysis};
 use crate::vm::functions::define::DefineFunctionsParsed;
 use crate::vm::functions::NativeFunctions;
@@ -52,10 +51,10 @@ pub struct ReadOnlyChecker<'a, 'b> {
 }
 
 impl AnalysisPass for ReadOnlyChecker<'_, '_> {
-    fn run_pass<'a>(
+    fn run_pass(
         epoch: &StacksEpochId,
         contract_analysis: &mut ContractAnalysis,
-        analysis_db: &mut impl AnalysisDatabaseExt<'a>,
+        analysis_db: &mut AnalysisDatabase,
     ) -> Result<(), StaticCheckError> {
         let mut command =
             ReadOnlyChecker::new(analysis_db, epoch, &contract_analysis.clarity_version);

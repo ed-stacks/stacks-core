@@ -24,7 +24,6 @@ mod error_mapping;
 pub mod test_utils;
 
 use crate::types::StacksEpochId;
-use crate::vm::analysis::analysis_db::AnalysisDatabaseExt;
 use crate::vm::analysis::{run_analysis, AnalysisDatabase, ContractAnalysis};
 use crate::vm::ast::{build_ast_with_diagnostics, ContractAST};
 use crate::vm::costs::{ExecutionCost, LimitedCostTracker};
@@ -59,13 +58,13 @@ pub enum CompileError {
     },
 }
 
-pub fn compile<'a>(
+pub fn compile(
     source: &str,
     contract_id: &QualifiedContractIdentifier,
     mut cost_tracker: LimitedCostTracker,
     clarity_version: ClarityVersion,
     epoch: StacksEpochId,
-    analysis_db: &mut impl AnalysisDatabaseExt<'a>,
+    analysis_db: &mut AnalysisDatabase,
     emit_cost_code: bool,
 ) -> Result<CompileResult, CompileError> {
     // Parse the contract

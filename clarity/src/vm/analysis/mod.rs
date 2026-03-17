@@ -36,7 +36,6 @@ use self::trait_checker::TraitChecker;
 use self::type_checker::v2_05::TypeChecker as TypeChecker2_05;
 use self::type_checker::v2_1::TypeChecker as TypeChecker2_1;
 pub use self::types::{AnalysisPass, ContractAnalysis};
-use crate::vm::analysis::analysis_db::AnalysisDatabaseExt;
 #[cfg(feature = "rusqlite")]
 use crate::vm::ast::build_ast;
 use crate::vm::costs::LimitedCostTracker;
@@ -95,7 +94,7 @@ pub fn mem_type_check(
 pub fn type_check(
     contract_identifier: &QualifiedContractIdentifier,
     expressions: &mut [SymbolicExpression],
-    analysis_db: &mut impl AnalysisDatabaseExt,
+    analysis_db: &mut AnalysisDatabase,
     insert_contract: bool,
     epoch: &StacksEpochId,
     version: &ClarityVersion,
@@ -116,10 +115,10 @@ pub fn type_check(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_analysis<'a>(
+pub fn run_analysis(
     contract_identifier: &QualifiedContractIdentifier,
     expressions: &[SymbolicExpression],
-    analysis_db: &mut impl AnalysisDatabaseExt<'a>,
+    analysis_db: &mut AnalysisDatabase,
     save_contract: bool,
     cost_tracker: LimitedCostTracker,
     epoch: StacksEpochId,
