@@ -1394,63 +1394,106 @@ impl<'a, 'b> Environment<'a, 'b> {
             self.global_context.begin();
         }
 
-        let result = {
-            #[cfg(feature = "clarity-wasm")]
+        let result =
             {
-                use crate::vm::wasm::compile;
-                use clarity_types::errors::WasmError;
+                #[cfg(feature = "clarity-wasm")]
+                {
+                    use crate::vm::{types::FunctionType, wasm::compile};
+                    use clarity_types::errors::WasmError;
 
-                let mut contract_context = next_contract_context
-                    .cloned()
-                    .unwrap_or(self.contract_context.clone());
+                    let mut contract_context = next_contract_context
+                        .cloned()
+                        .unwrap_or(self.contract_context.clone());
 
-                let contract_source = self
-                    .global_context
-                    .database
-                    .get_contract_src(&contract_context.contract_identifier)
-                    .expect("Existing contract has no source in MARF");
+                    let contract_source = self
+                        .global_context
+                        .database
+                        .get_contract_src(&contract_context.contract_identifier)
+                        .expect("Existing contract has no source in MARF");
 
-                let emit_cost_code = false;
+                    let emit_cost_code = false;
 
-                let mut compile_result = compile(
-                    &contract_source,
-                    &contract_context.contract_identifier,
-                    LimitedCostTracker::Free,
-                    contract_context.clarity_version,
-                    self.global_context.epoch_id,
-                    &mut self.global_context.database,
-                    emit_cost_code,
-                )
-                .map_err(|err| {
-                    VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.to_string()))
-                })?;
+                    let mut compile_result = compile(
+                        &contract_source,
+                        &contract_context.contract_identifier,
+                        LimitedCostTracker::Free,
+                        contract_context.clarity_version,
+                        self.global_context.epoch_id,
+                        &mut self.global_context.database,
+                        emit_cost_code,
+                    )
+                    .map_err(|err| {
+                        VmExecutionError::Wasm(WasmError::WasmGeneratorError(err.to_string()))
+                    })?;
 
-                contract_context.set_wasm_module(compile_result.module.emit_wasm());
+                    contract_context.set_wasm_module(compile_result.module.emit_wasm());
 
-                call_function(
-                    &function.get_name(),
-                    args,
-                    &mut self.global_context,
-                    &contract_context,
-                    self.call_stack,
-                    self.sender.clone(),
-                    self.caller.clone(),
-                    self.sponsor.clone(),
-                )
-            }
-            #[cfg(not(feature = "clarity-wasm"))]
-            {
-                let mut nested_env = Environment::new(
-                    &mut self.global_context,
-                    next_contract_context,
-                    self.call_stack,
-                    self.sender.clone(),
-                    self.caller.clone(),
-                    self.sponsor.clone(),
-                );
-                function.execute_apply(args, &mut nested_env)
-            }
-        };
+                    // This is a *hack* designed to set the function returns type. This is necessary
+                    // because - due to unknown reasons - we don't save it together with the arguments
+
+                    let func_name = function.get_name();
+
+                    let func_type = compile_result
+                        .contract_analysis
+                        .get_public_function_type(func_name)
+                        .or_else(|| {
+                            compile_result
+                                .contract_analysis
+                                .get_read_only_function_type(func_name)
+                        })
+                        .or_else(|| {
+                            allow_private
+                                .then(|| {
+                                    compile_result
+                                        .contract_analysis
+                                        .get_private_function(func_name)
+                                })
+                                .flatten()
+                        })
+                        .ok_or(VmExecutionError::Wasm(WasmError::ExpectedFunctionNotFound(
+                            func_name.clone(),
+                        )))?;
+
+                    let return_type = match func_type {
+                        FunctionType::Fixed(func) => func.returns.clone(),
+                        _ => {
+                            return Err(VmExecutionError::Wasm(
+                                WasmError::ExpectedFunctionInvalidType,
+                            ));
+                        }
+                    };
+
+                    let func = contract_context.functions.get_mut(func_name).ok_or(
+                        VmExecutionError::Wasm(WasmError::ExpectedFunctionNotFound(
+                            func_name.clone(),
+                        )),
+                    )?;
+                    func.return_type = Some(return_type);
+
+                    call_function(
+                        &function.get_name(),
+                        args,
+                        &mut self.global_context,
+                        &contract_context,
+                        self.call_stack,
+                        self.sender.clone(),
+                        self.caller.clone(),
+                        self.sponsor.clone(),
+                    )
+                }
+                #[cfg(not(feature = "clarity-wasm"))]
+                {
+                    let mut nested_env = Environment::new(
+                        &mut self.global_context,
+                        next_contract_context,
+                        self.call_stack,
+                        self.sender.clone(),
+                        self.caller.clone(),
+                        self.sponsor.clone(),
+                    );
+                    function.execute_apply(args, &mut nested_env)
+                }
+            };
 
         if make_read_only {
             self.global_context.roll_back()?;
