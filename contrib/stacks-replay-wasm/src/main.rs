@@ -46,6 +46,9 @@ struct Cli {
     start_block: u64,
     /// Block to end replay on
     end_block: u64,
+    /// Database to output to. Defaults to `replay` within `database_path`
+    #[arg(long)]
+    replay_path: Option<PathBuf>,
 }
 
 fn main() {
@@ -104,6 +107,10 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     *INJECTED_LOGGER.lock().unwrap() = Some(logger);
 
     let db_path = cli.database_path.display().to_string();
+    let replay_db_path = cli.replay_path.map_or_else(
+        || format!("{db_path}/replay/"),
+        |path| path.display().to_string(),
+    );
 
     let (chainstate, _) = StacksChainState::open(
         DEFAULT_MAINNET_CONFIG.is_mainnet(),
@@ -113,7 +120,7 @@ fn validate_blocks(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let chainstate_conn = chainstate.nakamoto_blocks_db();
-    let result_conn = Connection::open(format!("{db_path}/replay/"))?;
+    let result_conn = Connection::open(replay_db_path)?;
 
     let mut count_stmt = chainstate_conn.prepare(&format!(
         "SELECT COUNT(*) \
